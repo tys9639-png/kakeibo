@@ -780,8 +780,10 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
   <section class="tab-panel hidden" data-panel="prepay">
     <div class="card">
       <h2>計画の設定</h2>
-      <p class="note">毎月いくら繰上返済に回すかを決めて、実際に返済できた額を月ごとに記録します。
-        ここに入力した金額は<strong>家計簿の支出集計には含まれません</strong>。
+      <p class="note">毎月いくら繰上返済に回すかを決めて、月ごとの収入と支出を記録します。
+        <strong>差引（収入 − 支出）がそのまま繰上返済に回せる額</strong>として扱われ、
+        支出が上回った月はマイナスとして累計から差し引かれます。
+        ここに入力した金額は<strong>家計簿の集計には含まれません</strong>。
         家計簿にも残す場合は、通常の記録として別に入力してください。</p>
       <div class="map-grid">
         <div class="field">
@@ -816,9 +818,8 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
                 <th style="width:7em">月</th>
                 <th class="amt" style="width:8em">収入</th>
                 <th class="amt" style="width:8em">支出</th>
-                <th class="amt" style="width:7em">差引</th>
+                <th class="amt" style="width:9em">差引＝繰上返済</th>
                 <th class="amt" style="width:7em">目標</th>
-                <th class="amt" style="width:8em">繰上返済</th>
                 <th class="amt" style="width:7em">差</th>
                 <th class="amt" style="width:8em">累計</th>
                 <th style="width:6em">達成</th>
@@ -1618,9 +1619,6 @@ function renderPrepay() {
       <td class="amt pp-exp"></td>
       <td class="amt pp-net"></td>
       <td class="amt sec pp-target"></td>
-      <td class="amt"><input class="pp-input" type="number" min="0" step="1000" inputmode="numeric"
-        data-m="${r.k}" data-f="actual" value="${r.a || ""}" placeholder="0"
-        aria-label="${monthLabel(r.k)}の繰上返済"></td>
       <td class="amt pp-diff"></td>
       <td class="amt pp-cum"></td>
       <td class="pp-bar"><div class="bar"><i></i></div></td>
@@ -1654,7 +1652,7 @@ function detailRow(k) {
       <button class="btn sm" data-add="${field}" data-m="${k}">＋ ${label}を追加</button>
     </div>`;
   };
-  return `<tr class="pp-detail" data-detail="${k}"><td colspan="9">
+  return `<tr class="pp-detail" data-detail="${k}"><td colspan="8">
     <div class="pp-detail-grid">${side("income", "収入")}${side("expense", "支出")}</div>
   </td></tr>`;
 }
@@ -1671,17 +1669,18 @@ function prepayCalc() {
   let incomeTotal = 0, expenseTotal = 0;
 
   const rows = months.map(k => {
-    const a = Math.max(0, Math.round(p.actual[k]) || 0);
     const inc = sum(p.income[k]);
     const exp = sum(p.expense[k]);
+    // その月の差引（収入 − 支出）が、そのまま繰上返済に回せる額。マイナスもありうる
+    const a = inc - exp;
     cum += a; actualTotal += a; incomeTotal += inc; expenseTotal += exp;
     // 「今月までの過不足」は、今月以前の月どうしで比べる
     if (k <= now) { targetToDate += target; actualToDate += a; doneMonths++; }
     return {
-      k, a, inc, exp, net: inc - exp, cum, target,
+      k, a, inc, exp, cum, target,
       diff: a - target,
       hasNet: !!(inc || exp),
-      pct: target > 0 ? Math.min(100, a / target * 100) : (a > 0 ? 100 : 0),
+      pct: target > 0 ? Math.max(0, Math.min(100, a / target * 100)) : (a > 0 ? 100 : 0),
       isNow: k === now
     };
   });
@@ -1695,6 +1694,8 @@ function prepayCalc() {
 
 const signedYen = v => v === 0 ? "±0" : (v > 0 ? "+" : "−") + yen(Math.abs(v)).slice(1);
 const signColor = v => v < 0 ? "var(--critical)" : v > 0 ? "var(--delta-up)" : "var(--text-muted)";
+// マイナスは「−¥1,234」の形で出す（¥-1,234 にしない）
+const yenAmt = v => v < 0 ? "−" + yen(-v) : yen(v);
 
 // 表の行は組み直さず、計算結果のセルだけ書き換える（入力中に入力欄を失わないため）
 function refreshPrepayCalc(calc) {
@@ -1706,10 +1707,10 @@ function refreshPrepayCalc(calc) {
     if (!tr) continue;
     put($(".pp-inc", tr), r.inc ? yen(r.inc) : "—", r.inc ? "" : "var(--text-muted)");
     put($(".pp-exp", tr), r.exp ? yen(r.exp) : "—", r.exp ? "" : "var(--text-muted)");
-    put($(".pp-net", tr), r.hasNet ? signedYen(r.net) : "—", r.hasNet ? signColor(r.net) : "var(--text-muted)");
+    put($(".pp-net", tr), r.hasNet ? yenAmt(r.a) : "—", r.hasNet ? signColor(r.a) : "var(--text-muted)");
     put($(".pp-target", tr), yen(r.target));
     put($(".pp-diff", tr), signedYen(r.diff), signColor(r.diff));
-    put($(".pp-cum", tr), yen(r.cum));
+    put($(".pp-cum", tr), yenAmt(r.cum), r.cum < 0 ? "var(--critical)" : "");
     const bar = $(".pp-bar i", tr);
     if (bar) {
       bar.style.width = `${r.pct.toFixed(1)}%`;
@@ -1718,16 +1719,14 @@ function refreshPrepayCalc(calc) {
     }
   }
 
-  const netTotal = c.incomeTotal - c.expenseTotal;
   const totalDiff = c.actualTotal - c.planTotal;
   const hasNet = !!(c.incomeTotal || c.expenseTotal);
   $("#ppTable tfoot").innerHTML = `<tr>
     <td>合計</td>
     <td class="amt">${c.incomeTotal ? yen(c.incomeTotal) : "—"}</td>
     <td class="amt">${c.expenseTotal ? yen(c.expenseTotal) : "—"}</td>
-    <td class="amt" style="color:${hasNet ? signColor(netTotal) : "var(--text-muted)"}">${hasNet ? signedYen(netTotal) : "—"}</td>
+    <td class="amt" style="color:${hasNet ? signColor(c.actualTotal) : "var(--text-muted)"}">${hasNet ? yenAmt(c.actualTotal) : "—"}</td>
     <td class="amt sec">${yen(c.planTotal)}</td>
-    <td class="amt">${yen(c.actualTotal)}</td>
     <td class="amt" style="color:${signColor(totalDiff)}">${signedYen(totalDiff)}</td>
     <td></td><td></td>
   </tr>`;
@@ -1742,8 +1741,8 @@ function refreshPrepayCalc(calc) {
     </div>
     <div class="tile">
       <div class="k">実績累計</div>
-      <div class="v num">${yen(c.actualTotal)}</div>
-      <div class="sub">達成率 ${rate.toFixed(0)}%　残り ${yen(Math.max(0, c.planTotal - c.actualTotal))}</div>
+      <div class="v num ${c.actualTotal < 0 ? "neg" : ""}">${yenAmt(c.actualTotal)}</div>
+      <div class="sub">達成率 ${rate < 0 ? "−" : ""}${Math.abs(rate).toFixed(0)}%　残り ${yen(Math.max(0, c.planTotal - c.actualTotal))}</div>
     </div>
     <div class="tile">
       <div class="k">今月までの過不足</div>
@@ -1773,13 +1772,6 @@ $("#ppTable").addEventListener("change", e => {
   const t = e.target, k = t.dataset?.m, f = t.dataset?.f;
   if (!k) return;
   const p = state.prepay;
-
-  if (f === "actual") {                       // 繰上返済の実績
-    const v = Math.max(0, Math.round(Number(t.value) || 0));
-    if (v > 0) p.actual[k] = v; else delete p.actual[k];
-    save(); refreshPrepayCalc();
-    return;
-  }
   if (!["income", "expense"].includes(f)) return;   // 収入・支出の内訳
   const i = Number(t.dataset.i);
   const list = p[f][k];
