@@ -321,6 +321,24 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
 .rule-row .to { color: var(--text-secondary); flex: 1; }
 .editing { outline: 2px solid var(--series-1); outline-offset: 2px; }
 .shifted { color: var(--serious); font-weight: 700; margin-left: 2px; cursor: help; }
+
+/* ── 繰上返済計画 ─────────────────────────────────────── */
+.pp-start { display: flex; gap: 6px; }
+.pp-start select {
+  flex: 1; min-width: 0; background: var(--plane); border: 1px solid var(--border);
+  border-radius: 8px; padding: 7px 9px;
+}
+.map-grid input[type="number"] {
+  background: var(--plane); border: 1px solid var(--border); border-radius: 8px;
+  padding: 7px 9px; width: 100%; text-align: right; font-variant-numeric: tabular-nums;
+}
+.pp-input {
+  width: 100%; background: var(--plane); border: 1px solid var(--border); border-radius: 8px;
+  padding: 5px 8px; text-align: right; font-variant-numeric: tabular-nums;
+}
+.pp-input:focus { outline: 2px solid var(--series-1); outline-offset: -1px; }
+#ppTable tbody tr.cur td { background: var(--wash); }
+#ppTable .bar { margin-top: 0; }
 .toast {
   position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%) translateY(8px);
   background: var(--text-primary); color: var(--surface-1);
@@ -422,6 +440,7 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
     <button role="tab" data-tab="summary" aria-selected="false">集計</button>
     <button role="tab" data-tab="budget" aria-selected="false">予算・カテゴリ</button>
     <button role="tab" data-tab="data" aria-selected="false">データ</button>
+    <button role="tab" data-tab="prepay" aria-selected="false">繰上返済計画</button>
   </nav>
 
   <div class="tiles" id="tiles"></div>
@@ -723,9 +742,59 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
 
     <div class="card">
       <h2>保存データ</h2>
-      <p class="note">データはこの端末のブラウザ (localStorage) にだけ保存されます。ブラウザのデータを消すと失われるので、大事な記録は CSV で書き出しておいてください。</p>
+      <p class="note">記録はクラウドに保存され、この端末のブラウザにも控えが残ります。
+        サービスを乗り換えるときのために、大事な記録は CSV で書き出しておいてください。</p>
       <div class="inline-add">
         <button class="btn danger" id="resetAll">すべてのデータを削除</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 繰上返済計画 -->
+  <section class="tab-panel hidden" data-panel="prepay">
+    <div class="card">
+      <h2>計画の設定</h2>
+      <p class="note">毎月いくら繰上返済に回すかを決めて、実際に返済できた額を月ごとに記録します。
+        ここに入力した金額は<strong>家計簿の支出集計には含まれません</strong>。
+        家計簿にも残す場合は、通常の記録として別に入力してください。</p>
+      <div class="map-grid">
+        <div class="field">
+          <label for="pp-target">月々の目標金額（円）</label>
+          <input type="number" id="pp-target" min="0" step="1000" inputmode="numeric" placeholder="30000">
+        </div>
+        <div class="field">
+          <label for="pp-startY">開始月</label>
+          <div class="pp-start"><select id="pp-startY"></select><select id="pp-startM"></select></div>
+        </div>
+        <div class="field">
+          <label for="pp-months">期間（か月）</label>
+          <input type="number" id="pp-months" min="1" max="120" step="1" inputmode="numeric">
+        </div>
+      </div>
+      <p class="note" id="pp-range"></p>
+    </div>
+
+    <div class="tiles" id="pp-tiles"></div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>月ごとの実績</h2>
+        <span class="muted spacer" style="font-size:13px">入力欄から離れると自動で保存されます</span>
+      </div>
+      <div class="table-scroll">
+        <table id="ppTable">
+          <thead>
+            <tr>
+              <th style="width:7em">月</th>
+              <th class="amt" style="width:7em">目標</th>
+              <th class="amt" style="width:8.5em">実績</th>
+              <th class="amt" style="width:7em">差</th>
+              <th class="amt" style="width:8em">累計</th>
+              <th style="width:6em">達成</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
       </div>
     </div>
   </section>
@@ -782,6 +851,8 @@ const DEFAULTS = {
   payments: ["DC CARD", "docomo D Card", "d払い", "引落", "現金"],
   rules: [],            // 店名キーワード → カテゴリの振り分けルール
   importProfiles: {},   // 支払い方法ごとの、カード明細CSVの列対応
+  // 繰上返済計画。家計簿の集計とは独立して持つ
+  prepay: { target: 0, start: "", months: 12, actual: {} },
   transactions: []
 };
 
@@ -806,12 +877,12 @@ function lsDel(key) { try { localStorage.removeItem(key); } catch (e) {} }
 function load() {
   try {
     const raw = lsGet(STORE_KEY);
-    if (!raw) return structuredClone(DEFAULTS);
+    if (!raw) return migrate(structuredClone(DEFAULTS));
     const d = JSON.parse(raw);
     if (!Array.isArray(d.transactions) || !Array.isArray(d.categories)) throw 0;
     return migrate(d);
   } catch (e) {
-    return structuredClone(DEFAULTS);
+    return migrate(structuredClone(DEFAULTS));
   }
 }
 
@@ -827,6 +898,15 @@ function migrate(d) {
   if (!Array.isArray(d.payments)) d.payments = structuredClone(DEFAULTS.payments);
   if (!Array.isArray(d.rules)) d.rules = [];
   if (!d.importProfiles || typeof d.importProfiles !== "object") d.importProfiles = {};
+
+  // 繰上返済計画
+  if (!d.prepay || typeof d.prepay !== "object") d.prepay = {};
+  const p = d.prepay;
+  if (typeof p.target !== "number" || !(p.target >= 0)) p.target = 0;
+  if (!/^\d{4}-\d{2}$/.test(p.start || "")) p.start = monthKey(new Date());
+  if (!Number.isFinite(p.months) || p.months < 1) p.months = 12;
+  p.months = Math.min(120, Math.round(p.months));
+  if (!p.actual || typeof p.actual !== "object") p.actual = {};
   for (const t of d.transactions) {
     if (typeof t.sub !== "string") t.sub = "";
     if (typeof t.item !== "string") t.item = "";
@@ -1438,10 +1518,115 @@ function renderOptionFilter(sel, options, field, allLabel) {
   view[field] = sel.value;
 }
 
+/* ══ 描画：繰上返済計画 ════════════════════════════════ */
+// 計画の対象となる月を、開始月から期間ぶん並べる
+function prepayMonths() {
+  const out = [];
+  let k = state.prepay.start;
+  for (let i = 0; i < state.prepay.months; i++) { out.push(k); k = shiftMonth(k, 1); }
+  return out;
+}
+
+function renderPrepay() {
+  const p = state.prepay;
+  const target = Math.max(0, Math.round(p.target) || 0);
+
+  $("#pp-target").value = target || "";
+  $("#pp-months").value = p.months;
+
+  const [sy, sm] = p.start.split("-").map(Number);
+  const thisYear = new Date().getFullYear();
+  const years = new Set([sy, thisYear, thisYear + 1, thisYear + 2]);
+  $("#pp-startY").innerHTML = [...years].sort((a, b) => a - b)
+    .map(v => `<option value="${v}">${v}年</option>`).join("");
+  $("#pp-startY").value = String(sy);
+  const mSel = $("#pp-startM");
+  if (mSel.options.length !== 12) {
+    mSel.innerHTML = Array.from({ length: 12 }, (_, i) => `<option value="${i + 1}">${i + 1}月</option>`).join("");
+  }
+  mSel.value = String(sm);
+
+  const months = prepayMonths();
+  const now = monthKey(new Date());
+  const planTotal = target * months.length;
+
+  $("#pp-range").textContent =
+    `${monthLabel(months[0])} 〜 ${monthLabel(months[months.length - 1])}　／　目標総額 ${yen(planTotal)}`;
+
+  let cum = 0, actualTotal = 0, targetToDate = 0, actualToDate = 0, doneMonths = 0;
+  const rows = months.map(k => {
+    const a = Math.max(0, Math.round(p.actual[k]) || 0);
+    cum += a; actualTotal += a;
+    // 「今月までの過不足」は、今月以前の月どうしで比べる
+    if (k <= now) { targetToDate += target; actualToDate += a; doneMonths++; }
+    const diff = a - target;
+    const pct = target > 0 ? Math.min(100, a / target * 100) : (a > 0 ? 100 : 0);
+    const color = (target > 0 && a >= target) ? "var(--good)" : a > 0 ? "var(--series-1)" : "transparent";
+    return `<tr class="${k === now ? "cur" : ""}">
+      <td>${monthLabel(k)}${k === now ? ' <span class="muted">今月</span>' : ""}</td>
+      <td class="amt sec">${yen(target)}</td>
+      <td class="amt"><input class="pp-input" type="number" min="0" step="1000" inputmode="numeric"
+        data-m="${k}" value="${a || ""}" placeholder="0" aria-label="${monthLabel(k)}の実績"></td>
+      <td class="amt" style="color:${diff < 0 ? "var(--critical)" : diff > 0 ? "var(--delta-up)" : "var(--text-muted)"}">${
+        diff === 0 ? "±0" : (diff > 0 ? "+" : "−") + yen(Math.abs(diff)).slice(1)}</td>
+      <td class="amt">${yen(cum)}</td>
+      <td><div class="bar"><i style="width:${pct.toFixed(1)}%;background:${color}"></i></div></td>
+    </tr>`;
+  }).join("");
+  $("#ppTable tbody").innerHTML = rows;
+
+  const rate = planTotal > 0 ? actualTotal / planTotal * 100 : 0;
+  const pace = actualToDate - targetToDate;
+  $("#pp-tiles").innerHTML = `
+    <div class="tile">
+      <div class="k">目標総額</div>
+      <div class="v num">${yen(planTotal)}</div>
+      <div class="sub">${months.length} か月 × ${yen(target)}</div>
+    </div>
+    <div class="tile">
+      <div class="k">実績累計</div>
+      <div class="v num">${yen(actualTotal)}</div>
+      <div class="sub">達成率 ${rate.toFixed(0)}%　残り ${yen(Math.max(0, planTotal - actualTotal))}</div>
+    </div>
+    <div class="tile">
+      <div class="k">今月までの過不足</div>
+      <div class="v num ${pace > 0 ? "pos" : pace < 0 ? "neg" : ""}">${
+        pace === 0 ? "±0" : (pace > 0 ? "+" : "−") + yen(Math.abs(pace)).slice(1)}</div>
+      <div class="sub">${doneMonths} か月ぶんの目標 ${yen(targetToDate)}</div>
+    </div>`;
+}
+
+/* ── 繰上返済計画の操作 ─────────────────────────────── */
+$("#pp-target").addEventListener("change", e => {
+  state.prepay.target = Math.max(0, Math.round(Number(e.target.value) || 0));
+  save(); renderPrepay();
+});
+$("#pp-months").addEventListener("change", e => {
+  const n = Math.round(Number(e.target.value) || 0);
+  state.prepay.months = Math.min(120, Math.max(1, n));
+  save(); renderPrepay();
+});
+function onPrepayStart() {
+  state.prepay.start = `${$("#pp-startY").value}-${String($("#pp-startM").value).padStart(2, "0")}`;
+  save(); renderPrepay();
+}
+$("#pp-startY").addEventListener("change", onPrepayStart);
+$("#pp-startM").addEventListener("change", onPrepayStart);
+
+$("#ppTable").addEventListener("change", e => {
+  const k = e.target.dataset?.m;
+  if (!k) return;
+  const v = Math.max(0, Math.round(Number(e.target.value) || 0));
+  if (v > 0) state.prepay.actual[k] = v; else delete state.prepay.actual[k];
+  save(); renderPrepay();
+});
+
 /* ══ 全体描画 ══════════════════════════════════════════ */
 function renderAll() {
   renderMonthPicker();
   renderTiles();
+  // 繰上返済計画は家計簿の月とは独立なので、月の収支タイルは隠す
+  $("#tiles").classList.toggle("hidden", view.tab === "prepay");
   renderAggMonthSelect($("#f-month").value);
   renderCatSelect();
   renderOptionSelect($("#f-user"), state.users);
@@ -1463,6 +1648,7 @@ function renderAll() {
     renderOptionList("#payList", state.payments, "pay", "支払い方法が登録されていません。");
   }
   if (view.tab === "data") renderRules();
+  if (view.tab === "prepay") renderPrepay();
 }
 
 /* ══ CSV ═══════════════════════════════════════════════ */
@@ -2306,7 +2492,7 @@ let session = null;    // {access_token, refresh_token, expires_at, email}
 let synced = null;     // {tx: Map(id → JSON), settings: JSON}
 let syncTimer = null, syncing = false;
 
-const SETTINGS_KEYS = ["categories", "users", "payments", "rules", "importProfiles"];
+const SETTINGS_KEYS = ["categories", "users", "payments", "rules", "importProfiles", "prepay"];
 const settingsSnapshot = () => JSON.stringify(Object.fromEntries(SETTINGS_KEYS.map(k => [k, state[k]])));
 
 const txRow = t => ({
