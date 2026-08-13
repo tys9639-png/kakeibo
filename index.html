@@ -1534,9 +1534,12 @@ function renderPrepay() {
   $("#pp-target").value = target || "";
   $("#pp-months").value = p.months;
 
+  // 開始月は過去にさかのぼって設定できるようにする（実績を後から入れる場合に必要）
   const [sy, sm] = p.start.split("-").map(Number);
   const thisYear = new Date().getFullYear();
-  const years = new Set([sy, thisYear, thisYear + 1, thisYear + 2]);
+  const years = new Set([sy]);
+  for (let y = thisYear - 6; y <= thisYear + 2; y++) years.add(y);
+  Object.keys(p.actual).forEach(k => years.add(Number(k.slice(0, 4))));
   $("#pp-startY").innerHTML = [...years].sort((a, b) => a - b)
     .map(v => `<option value="${v}">${v}年</option>`).join("");
   $("#pp-startY").value = String(sy);
