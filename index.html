@@ -341,6 +341,27 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
 #ppTable .bar { margin-top: 0; }
 #ppTable tfoot td { border-top: 2px solid var(--axis); border-bottom: 0; font-weight: 650; }
 .btn.fold { padding: 3px 9px; font-size: 13px; line-height: 1.2; min-width: 2em; }
+
+/* 収入・支出の内訳エディタ */
+.pp-month-btn {
+  background: none; border: 0; cursor: pointer; color: var(--text-muted);
+  padding: 2px 5px; font-size: 12px; border-radius: 5px;
+}
+.pp-month-btn:hover { background: var(--wash); color: var(--text-primary); }
+.pp-detail > td { background: var(--plane); padding: 14px 12px; }
+.pp-detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; max-width: 720px; }
+.pp-detail-grid h4 { margin: 0 0 7px; font-size: 12px; font-weight: 650; color: var(--text-secondary); }
+.pp-detail-grid .note { margin: 0 0 7px; }
+.pp-entry { display: flex; gap: 6px; margin-bottom: 6px; align-items: center; }
+.pp-entry .pp-name { flex: 1; min-width: 0; }
+.pp-entry .pp-amt { width: 110px; flex: none; }
+.pp-name, .pp-amt {
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: 8px; padding: 5px 8px; font-size: 13px;
+}
+.pp-amt { text-align: right; font-variant-numeric: tabular-nums; }
+.pp-name:focus, .pp-amt:focus { outline: 2px solid var(--series-1); outline-offset: -1px; }
+@media (max-width: 700px) { .pp-detail-grid { grid-template-columns: 1fr; gap: 16px; } }
 .toast {
   position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%) translateY(8px);
   background: var(--text-primary); color: var(--surface-1);
@@ -387,7 +408,9 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
   .monthnav .btn { padding: 6px 8px; }
   .monthnav .btn.icon, header.top > .btn.icon { padding: 6px 8px; }
   #thisMonth { margin-left: 2px !important; }
-  .btn.fold { padding: 9px 14px; }   /* 指で押しやすい大きさにする */
+  /* 指で押しやすい大きさにする */
+  .btn.fold { padding: 9px 14px; }
+  .pp-month-btn { padding: 8px 10px; font-size: 14px; }
 }
 @media (max-width: 820px) {
   .charts { grid-template-columns: 1fr; }
@@ -916,8 +939,19 @@ function migrate(d) {
   if (!/^\d{4}-\d{2}$/.test(p.start || "")) p.start = monthKey(new Date());
   if (!Number.isFinite(p.months) || p.months < 1) p.months = 12;
   p.months = Math.min(120, Math.round(p.months));
-  for (const key of ["actual", "income", "expense"]) {
+  if (!p.actual || typeof p.actual !== "object") p.actual = {};
+  // 収入・支出は月ごとの内訳リスト。単一の数値だった頃のデータは1件の内訳に変換する
+  for (const key of ["income", "expense"]) {
     if (!p[key] || typeof p[key] !== "object") p[key] = {};
+    for (const k of Object.keys(p[key])) {
+      const v = p[key][k];
+      let list;
+      if (typeof v === "number") list = v > 0 ? [{ name: "", amount: Math.round(v) }] : [];
+      else if (Array.isArray(v)) list = v.filter(e => e && typeof e === "object")
+        .map(e => ({ name: String(e.name ?? ""), amount: Math.max(0, Math.round(e.amount) || 0) }));
+      else list = [];
+      if (list.length) p[key][k] = list; else delete p[key][k];
+    }
   }
   p.collapsed = !!p.collapsed;
   for (const t of d.transactions) {
@@ -1532,6 +1566,8 @@ function renderOptionFilter(sel, options, field, allLabel) {
 }
 
 /* ══ 描画：繰上返済計画 ════════════════════════════════ */
+const ppOpen = new Set();   // 収入・支出の内訳を開いている月
+
 // 計画の対象となる月を、開始月から期間ぶん並べる
 function prepayMonths() {
   const out = [];
@@ -1569,77 +1605,150 @@ function renderPrepay() {
   $("#pp-range").textContent =
     `${monthLabel(months[0])} 〜 ${monthLabel(months[months.length - 1])}　／　目標総額 ${yen(planTotal)}`;
 
-  // 符号つきの金額表示
-  const signed = v => v === 0 ? "±0" : (v > 0 ? "+" : "−") + yen(Math.abs(v)).slice(1);
-  const signColor = v => v < 0 ? "var(--critical)" : v > 0 ? "var(--delta-up)" : "var(--text-muted)";
-  const numCell = (k, field, v, label) =>
-    `<td class="amt"><input class="pp-input" type="number" min="0" step="1000" inputmode="numeric"
-      data-m="${k}" data-f="${field}" value="${v || ""}" placeholder="0"
-      aria-label="${monthLabel(k)}の${label}"></td>`;
+  const calc = prepayCalc();
+
+  $("#ppTable tbody").innerHTML = calc.rows.map(r => `
+    <tr data-m="${r.k}" class="${r.isNow ? "cur" : ""}">
+      <td>
+        <button class="pp-month-btn" data-open="${r.k}" aria-expanded="${ppOpen.has(r.k)}"
+          title="収入・支出の内訳">${ppOpen.has(r.k) ? "▾" : "▸"}</button>
+        ${monthLabel(r.k)}${r.isNow ? ' <span class="muted">今月</span>' : ""}
+      </td>
+      <td class="amt pp-inc"></td>
+      <td class="amt pp-exp"></td>
+      <td class="amt pp-net"></td>
+      <td class="amt sec pp-target"></td>
+      <td class="amt"><input class="pp-input" type="number" min="0" step="1000" inputmode="numeric"
+        data-m="${r.k}" data-f="actual" value="${r.a || ""}" placeholder="0"
+        aria-label="${monthLabel(r.k)}の繰上返済"></td>
+      <td class="amt pp-diff"></td>
+      <td class="amt pp-cum"></td>
+      <td class="pp-bar"><div class="bar"><i></i></div></td>
+    </tr>
+    ${ppOpen.has(r.k) ? detailRow(r.k) : ""}`).join("");
+
+  $("#ppBody").classList.toggle("hidden", !!p.collapsed);
+  $("#ppToggle").textContent = p.collapsed ? "▸" : "▾";
+  $("#ppToggle").setAttribute("aria-expanded", String(!p.collapsed));
+
+  refreshPrepayCalc(calc);
+}
+
+// 1か月ぶんの内訳エディタ
+function detailRow(k) {
+  const side = (field, label) => {
+    const list = state.prepay[field][k] || [];
+    const rows = list.map((e, i) => `
+      <div class="pp-entry">
+        <input class="pp-name" data-m="${k}" data-f="${field}" data-i="${i}" data-p="name"
+          value="${esc(e.name)}" maxlength="30" placeholder="内訳の名前" aria-label="${label}の名前">
+        <input class="pp-amt" type="number" min="0" step="1000" inputmode="numeric"
+          data-m="${k}" data-f="${field}" data-i="${i}" data-p="amount"
+          value="${e.amount || ""}" placeholder="0" aria-label="${label}の金額">
+        <button class="btn sm danger" data-del="${i}" data-m="${k}" data-f="${field}"
+          title="この行を削除" aria-label="削除">×</button>
+      </div>`).join("");
+    return `<div>
+      <h4>${label}${list.length ? `（${list.length} 件）` : ""}</h4>
+      <div class="pp-entries">${rows || '<p class="note">まだ入力がありません。</p>'}</div>
+      <button class="btn sm" data-add="${field}" data-m="${k}">＋ ${label}を追加</button>
+    </div>`;
+  };
+  return `<tr class="pp-detail" data-detail="${k}"><td colspan="9">
+    <div class="pp-detail-grid">${side("income", "収入")}${side("expense", "支出")}</div>
+  </td></tr>`;
+}
+
+// 集計だけを計算する（表を組み直さずに数字を更新するため）
+function prepayCalc() {
+  const p = state.prepay;
+  const target = Math.max(0, Math.round(p.target) || 0);
+  const months = prepayMonths();
+  const now = monthKey(new Date());
+  const sum = list => (list || []).reduce((s, e) => s + (e.amount || 0), 0);
 
   let cum = 0, actualTotal = 0, targetToDate = 0, actualToDate = 0, doneMonths = 0;
   let incomeTotal = 0, expenseTotal = 0;
 
   const rows = months.map(k => {
     const a = Math.max(0, Math.round(p.actual[k]) || 0);
-    const inc = Math.max(0, Math.round(p.income[k]) || 0);
-    const exp = Math.max(0, Math.round(p.expense[k]) || 0);
-    const net = inc - exp;
+    const inc = sum(p.income[k]);
+    const exp = sum(p.expense[k]);
     cum += a; actualTotal += a; incomeTotal += inc; expenseTotal += exp;
     // 「今月までの過不足」は、今月以前の月どうしで比べる
     if (k <= now) { targetToDate += target; actualToDate += a; doneMonths++; }
-    const diff = a - target;
-    const pct = target > 0 ? Math.min(100, a / target * 100) : (a > 0 ? 100 : 0);
-    const color = (target > 0 && a >= target) ? "var(--good)" : a > 0 ? "var(--series-1)" : "transparent";
-    return `<tr class="${k === now ? "cur" : ""}">
-      <td>${monthLabel(k)}${k === now ? ' <span class="muted">今月</span>' : ""}</td>
-      ${numCell(k, "income", inc, "収入")}
-      ${numCell(k, "expense", exp, "支出")}
-      <td class="amt" style="color:${(inc || exp) ? signColor(net) : "var(--text-muted)"}">${(inc || exp) ? signed(net) : "—"}</td>
-      <td class="amt sec">${yen(target)}</td>
-      ${numCell(k, "actual", a, "繰上返済")}
-      <td class="amt" style="color:${signColor(diff)}">${signed(diff)}</td>
-      <td class="amt">${yen(cum)}</td>
-      <td><div class="bar"><i style="width:${pct.toFixed(1)}%;background:${color}"></i></div></td>
-    </tr>`;
-  }).join("");
-  $("#ppTable tbody").innerHTML = rows;
+    return {
+      k, a, inc, exp, net: inc - exp, cum, target,
+      diff: a - target,
+      hasNet: !!(inc || exp),
+      pct: target > 0 ? Math.min(100, a / target * 100) : (a > 0 ? 100 : 0),
+      isNow: k === now
+    };
+  });
+  return {
+    rows, target, months,
+    planTotal: target * months.length,
+    actualTotal, incomeTotal, expenseTotal,
+    targetToDate, actualToDate, doneMonths
+  };
+}
 
-  const netTotal = incomeTotal - expenseTotal;
+const signedYen = v => v === 0 ? "±0" : (v > 0 ? "+" : "−") + yen(Math.abs(v)).slice(1);
+const signColor = v => v < 0 ? "var(--critical)" : v > 0 ? "var(--delta-up)" : "var(--text-muted)";
+
+// 表の行は組み直さず、計算結果のセルだけ書き換える（入力中に入力欄を失わないため）
+function refreshPrepayCalc(calc) {
+  const c = calc || prepayCalc();
+  const put = (td, text, color) => { if (!td) return; td.textContent = text; td.style.color = color || ""; };
+
+  for (const r of c.rows) {
+    const tr = $(`#ppTable tbody tr[data-m="${r.k}"]`);
+    if (!tr) continue;
+    put($(".pp-inc", tr), r.inc ? yen(r.inc) : "—", r.inc ? "" : "var(--text-muted)");
+    put($(".pp-exp", tr), r.exp ? yen(r.exp) : "—", r.exp ? "" : "var(--text-muted)");
+    put($(".pp-net", tr), r.hasNet ? signedYen(r.net) : "—", r.hasNet ? signColor(r.net) : "var(--text-muted)");
+    put($(".pp-target", tr), yen(r.target));
+    put($(".pp-diff", tr), signedYen(r.diff), signColor(r.diff));
+    put($(".pp-cum", tr), yen(r.cum));
+    const bar = $(".pp-bar i", tr);
+    if (bar) {
+      bar.style.width = `${r.pct.toFixed(1)}%`;
+      bar.style.background = (r.target > 0 && r.a >= r.target) ? "var(--good)"
+        : r.a > 0 ? "var(--series-1)" : "transparent";
+    }
+  }
+
+  const netTotal = c.incomeTotal - c.expenseTotal;
+  const totalDiff = c.actualTotal - c.planTotal;
+  const hasNet = !!(c.incomeTotal || c.expenseTotal);
   $("#ppTable tfoot").innerHTML = `<tr>
     <td>合計</td>
-    <td class="amt">${yen(incomeTotal)}</td>
-    <td class="amt">${yen(expenseTotal)}</td>
-    <td class="amt" style="color:${(incomeTotal || expenseTotal) ? signColor(netTotal) : "var(--text-muted)"}">${
-      (incomeTotal || expenseTotal) ? signed(netTotal) : "—"}</td>
-    <td class="amt sec">${yen(target * months.length)}</td>
-    <td class="amt">${yen(actualTotal)}</td>
-    <td class="amt" style="color:${signColor(actualTotal - target * months.length)}">${signed(actualTotal - target * months.length)}</td>
+    <td class="amt">${c.incomeTotal ? yen(c.incomeTotal) : "—"}</td>
+    <td class="amt">${c.expenseTotal ? yen(c.expenseTotal) : "—"}</td>
+    <td class="amt" style="color:${hasNet ? signColor(netTotal) : "var(--text-muted)"}">${hasNet ? signedYen(netTotal) : "—"}</td>
+    <td class="amt sec">${yen(c.planTotal)}</td>
+    <td class="amt">${yen(c.actualTotal)}</td>
+    <td class="amt" style="color:${signColor(totalDiff)}">${signedYen(totalDiff)}</td>
     <td></td><td></td>
   </tr>`;
 
-  $("#ppBody").classList.toggle("hidden", !!p.collapsed);
-  $("#ppToggle").textContent = p.collapsed ? "▸" : "▾";
-  $("#ppToggle").setAttribute("aria-expanded", String(!p.collapsed));
-
-  const rate = planTotal > 0 ? actualTotal / planTotal * 100 : 0;
-  const pace = actualToDate - targetToDate;
+  const rate = c.planTotal > 0 ? c.actualTotal / c.planTotal * 100 : 0;
+  const pace = c.actualToDate - c.targetToDate;
   $("#pp-tiles").innerHTML = `
     <div class="tile">
       <div class="k">目標総額</div>
-      <div class="v num">${yen(planTotal)}</div>
-      <div class="sub">${months.length} か月 × ${yen(target)}</div>
+      <div class="v num">${yen(c.planTotal)}</div>
+      <div class="sub">${c.months.length} か月 × ${yen(c.target)}</div>
     </div>
     <div class="tile">
       <div class="k">実績累計</div>
-      <div class="v num">${yen(actualTotal)}</div>
-      <div class="sub">達成率 ${rate.toFixed(0)}%　残り ${yen(Math.max(0, planTotal - actualTotal))}</div>
+      <div class="v num">${yen(c.actualTotal)}</div>
+      <div class="sub">達成率 ${rate.toFixed(0)}%　残り ${yen(Math.max(0, c.planTotal - c.actualTotal))}</div>
     </div>
     <div class="tile">
       <div class="k">今月までの過不足</div>
-      <div class="v num ${pace > 0 ? "pos" : pace < 0 ? "neg" : ""}">${
-        pace === 0 ? "±0" : (pace > 0 ? "+" : "−") + yen(Math.abs(pace)).slice(1)}</div>
-      <div class="sub">${doneMonths} か月ぶんの目標 ${yen(targetToDate)}</div>
+      <div class="v num ${pace > 0 ? "pos" : pace < 0 ? "neg" : ""}">${signedYen(pace)}</div>
+      <div class="sub">${c.doneMonths} か月ぶんの目標 ${yen(c.targetToDate)}</div>
     </div>`;
 }
 
@@ -1661,12 +1770,53 @@ $("#pp-startY").addEventListener("change", onPrepayStart);
 $("#pp-startM").addEventListener("change", onPrepayStart);
 
 $("#ppTable").addEventListener("change", e => {
-  const k = e.target.dataset?.m, f = e.target.dataset?.f;
-  if (!k || !["actual", "income", "expense"].includes(f)) return;
-  const map = state.prepay[f];
-  const v = Math.max(0, Math.round(Number(e.target.value) || 0));
-  if (v > 0) map[k] = v; else delete map[k];
-  save(); renderPrepay();
+  const t = e.target, k = t.dataset?.m, f = t.dataset?.f;
+  if (!k) return;
+  const p = state.prepay;
+
+  if (f === "actual") {                       // 繰上返済の実績
+    const v = Math.max(0, Math.round(Number(t.value) || 0));
+    if (v > 0) p.actual[k] = v; else delete p.actual[k];
+    save(); refreshPrepayCalc();
+    return;
+  }
+  if (!["income", "expense"].includes(f)) return;   // 収入・支出の内訳
+  const i = Number(t.dataset.i);
+  const list = p[f][k];
+  if (!Number.isInteger(i) || !list || !list[i]) return;
+  if (t.dataset.p === "name") list[i].name = t.value.trim().slice(0, 30);
+  else list[i].amount = Math.max(0, Math.round(Number(t.value) || 0));
+  save(); refreshPrepayCalc();
+});
+
+// 内訳の開閉・追加・削除
+$("#ppTable").addEventListener("click", e => {
+  const btn = e.target.closest("button");
+  if (!btn) return;
+  const p = state.prepay, k = btn.dataset.m;
+
+  if (btn.dataset.open !== undefined) {
+    const key = btn.dataset.open;
+    if (ppOpen.has(key)) ppOpen.delete(key); else ppOpen.add(key);
+    renderPrepay();
+    return;
+  }
+  if (btn.dataset.add !== undefined) {
+    const f = btn.dataset.add;
+    if (!p[f][k]) p[f][k] = [];
+    p[f][k].push({ name: "", amount: 0 });
+    save(); renderPrepay();
+    const added = $$(`#ppTable [data-m="${k}"][data-f="${f}"][data-p="name"]`).pop();
+    added?.focus();                            // 追加した行にカーソルを移す
+    return;
+  }
+  if (btn.dataset.del !== undefined) {
+    const f = btn.dataset.f, list = p[f]?.[k];
+    if (!list) return;
+    list.splice(Number(btn.dataset.del), 1);
+    if (!list.length) delete p[f][k];
+    save(); renderPrepay();
+  }
 });
 
 // 月ごとの実績を折りたたむ
