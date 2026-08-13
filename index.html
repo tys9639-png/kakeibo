@@ -179,24 +179,25 @@ nav.tabs button[aria-selected="true"] {
 .v.neg { color: var(--critical); }
 
 /* ── フォーム ─────────────────────────────────────────── */
-/* 項目が多いので2行に組む（上段＝日付・種別・カテゴリ3階層・金額／下段＝利用者・支払い・メモ・追加） */
+/* 項目が多いので2行に組む（上段＝日付・集計月・種別・カテゴリ3階層・金額／下段＝利用者・支払い・メモ・追加） */
 .form-grid {
   display: grid; gap: 10px; align-items: end;
-  grid-template-columns: 128px 100px minmax(94px,1fr) minmax(94px,1fr) minmax(94px,1fr) 96px;
+  grid-template-columns: 118px 112px 94px minmax(90px,1fr) minmax(90px,1fr) minmax(90px,1fr) 92px;
   grid-template-areas:
-    "date type cat  sub  item   amount"
-    "user pay  pay  memo memo   submit";
+    "date month type cat  sub  item amount"
+    "user pay   pay  memo memo memo submit";
 }
-.form-grid > :nth-child(1) { grid-area: date; }
-.form-grid > :nth-child(2) { grid-area: type; }
-.form-grid > :nth-child(3) { grid-area: cat; }
-.form-grid > :nth-child(4) { grid-area: sub; }
-.form-grid > :nth-child(5) { grid-area: item; }
-.form-grid > :nth-child(6) { grid-area: user; }
-.form-grid > :nth-child(7) { grid-area: pay; }
-.form-grid > :nth-child(8) { grid-area: amount; }
-.form-grid > :nth-child(9) { grid-area: memo; }
-.form-grid > :nth-child(10) { grid-area: submit; }
+.form-grid > :nth-child(1)  { grid-area: date; }
+.form-grid > :nth-child(2)  { grid-area: month; }
+.form-grid > :nth-child(3)  { grid-area: type; }
+.form-grid > :nth-child(4)  { grid-area: cat; }
+.form-grid > :nth-child(5)  { grid-area: sub; }
+.form-grid > :nth-child(6)  { grid-area: item; }
+.form-grid > :nth-child(7)  { grid-area: user; }
+.form-grid > :nth-child(8)  { grid-area: pay; }
+.form-grid > :nth-child(9)  { grid-area: amount; }
+.form-grid > :nth-child(10) { grid-area: memo; }
+.form-grid > :nth-child(11) { grid-area: submit; }
 .field select:disabled { color: var(--text-muted); background: var(--wash); }
 .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .field label { font-size: 12px; color: var(--text-secondary); }
@@ -319,6 +320,7 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
 .rule-row .key { font-weight: 600; min-width: 8em; }
 .rule-row .to { color: var(--text-secondary); flex: 1; }
 .editing { outline: 2px solid var(--series-1); outline-offset: 2px; }
+.shifted { color: var(--serious); font-weight: 700; margin-left: 2px; cursor: help; }
 .toast {
   position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%) translateY(8px);
   background: var(--text-primary); color: var(--surface-1);
@@ -435,6 +437,10 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
         <div class="field">
           <label for="f-date">日付</label>
           <input type="date" id="f-date" required>
+        </div>
+        <div class="field">
+          <label for="f-month">集計月</label>
+          <select id="f-month"></select>
         </div>
         <div class="field">
           <label>種別</label>
@@ -650,6 +656,13 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
           <div class="field"><label for="m-pay">支払い方法</label><select id="m-pay"></select></div>
           <div class="field"><label for="m-cat">既定のカテゴリ</label><select id="m-cat"></select></div>
           <div class="field"><label for="m-user">利用者</label><select id="m-user"></select></div>
+          <div class="field"><label for="m-agg">集計月</label>
+            <select id="m-agg">
+              <option value="0">利用日と同じ月</option>
+              <option value="1">利用日の翌月</option>
+              <option value="2">利用日の翌々月</option>
+            </select>
+          </div>
         </div>
         <p class="note">店名が下の「振り分けルール」に一致した記録は、そのカテゴリに割り当てられます。
           一致しなかった記録は「既定のカテゴリ」になります。<br>
@@ -695,10 +708,11 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
     <div class="card">
       <h2>CSV インポート</h2>
       <p class="note">
-        列は <code>日付, 種別, カテゴリ, 小カテゴリ, 品目, 利用者, 支払い方法, 金額, メモ</code> の順。
-        日付は <code>YYYY-MM-DD</code>、種別は <code>支出</code> または <code>収入</code>。
-        1行目が見出しの場合は自動で読み飛ばします。
-        列の少ない旧形式もそのまま読み込めます（見出し行があればそこから、なければ列数から形式を判定します）。
+        列は <code>日付, 集計月, 種別, カテゴリ, 小カテゴリ, 品目, 利用者, 支払い方法, 金額, メモ</code> の順。
+        日付は <code>YYYY-MM-DD</code>、集計月は <code>YYYY-MM</code>、種別は <code>支出</code> または <code>収入</code>。
+        <strong>見出し行があれば、列の順番が違っていても列名で対応づけます。</strong>
+        集計月の列が無い場合は日付の月として扱います。
+        列の少ない旧形式もそのまま読み込めます（見出しが無い場合は列数から判定します）。
         既存データに追加され、未登録のカテゴリ・小カテゴリ・品目・利用者・支払い方法は自動で作られます。
       </p>
       <div class="inline-add">
@@ -819,6 +833,8 @@ function migrate(d) {
     if (typeof t.user !== "string") t.user = "";     // 未設定
     if (typeof t.payment !== "string") t.payment = "";
     if (!t.sub) t.item = "";                         // 小カテゴリなしに品目は付かない
+    // 集計月。未設定なら日付の月とみなす
+    if (!/^\d{4}-\d{2}$/.test(t.month || "")) t.month = String(t.date || "").slice(0, 7);
   }
   return d;
 }
@@ -876,8 +892,9 @@ function toast(msg) {
 }
 
 /* ══ 集計 ══════════════════════════════════════════════ */
+// 月ごとの集計は「集計月」を基準にする（利用日ではない）
 function txOfMonth(key) {
-  return state.transactions.filter(t => t.date.slice(0, 7) === key);
+  return state.transactions.filter(t => t.month === key);
 }
 function totals(list) {
   let income = 0, expense = 0;
@@ -944,7 +961,7 @@ function recentMonths(n) {
   return out;
 }
 function allMonths() {
-  return Array.from(new Set(state.transactions.map(t => t.date.slice(0, 7)))).sort().reverse();
+  return Array.from(new Set(state.transactions.map(t => t.month))).sort().reverse();
 }
 
 /* ══ 描画：タイル ══════════════════════════════════════ */
@@ -985,8 +1002,11 @@ function renderList() {
   const tbody = $("#txTable tbody");
   tbody.innerHTML = list.map(t => {
     const d = t.date.split("-");
+    // 利用日の月と集計月がずれている記録には印を付ける
+    const shifted = t.date.slice(0, 7) !== t.month;
     return `<tr>
-      <td class="num">${Number(d[1])}/${Number(d[2])}</td>
+      <td class="num">${Number(d[1])}/${Number(d[2])}${
+        shifted ? `<span class="shifted" title="利用日 ${t.date} ／ 集計月 ${monthLabel(t.month)}">*</span>` : ""}</td>
       <td class="sec">${t.type === "income" ? "収入" : "支出"}</td>
       <td><span class="tag"><i class="swatch" style="background:${t.type === "income" ? "var(--series-1)" : "var(--series-2)"}"></i>${esc(t.category)}${
         [t.sub, t.item].filter(Boolean).map(n => ` <span class="crumb">›</span> <span class="sec">${esc(n)}</span>`).join("")
@@ -1251,7 +1271,7 @@ function renderMonthPicker() {
   const [y, m] = view.month.split("-").map(Number);
   const thisYear = new Date().getFullYear();
   const years = new Set([y, thisYear, thisYear + 1]);
-  state.transactions.forEach(t => years.add(Number(t.date.slice(0, 4))));
+  state.transactions.forEach(t => years.add(Number(t.month.slice(0, 4))));
 
   const ySel = $("#yearSel");
   ySel.innerHTML = [...years].sort((a, b) => a - b)
@@ -1361,6 +1381,21 @@ function renderCategories() {
   $("#catIncome").innerHTML  = catGroups("income");
 }
 
+/* ══ 描画：集計月の選択肢 ══════════════════════════════ */
+// 候補は日付の月の前後3か月。編集中の記録が離れた月なら、その値も必ず含める
+function renderAggMonthSelect(keep) {
+  const sel = $("#f-month");
+  const base = ($("#f-date").value || todayISO()).slice(0, 7);
+  const opts = [];
+  for (let d = -3; d <= 3; d++) opts.push(shiftMonth(base, d));
+  if (keep && !opts.includes(keep)) opts.push(keep);
+  opts.sort();
+  sel.innerHTML = opts.map(k => `<option value="${k}">${monthLabel(k)}</option>`).join("");
+  sel.value = opts.includes(keep) ? keep : base;
+}
+// 日付を変えたら、集計月はその月に戻す
+$("#f-date").addEventListener("change", () => renderAggMonthSelect());
+
 /* ══ 描画：カテゴリ選択肢 ══════════════════════════════ */
 function renderCatSelect() {
   const sel = $("#f-cat"), keep = sel.value;
@@ -1407,6 +1442,7 @@ function renderOptionFilter(sel, options, field, allLabel) {
 function renderAll() {
   renderMonthPicker();
   renderTiles();
+  renderAggMonthSelect($("#f-month").value);
   renderCatSelect();
   renderOptionSelect($("#f-user"), state.users);
   renderOptionSelect($("#f-pay"), state.payments);
@@ -1435,11 +1471,11 @@ function csvEscape(v) {
   return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
 }
 function toCSV(list) {
-  const head = ["日付", "種別", "カテゴリ", "小カテゴリ", "品目", "利用者", "支払い方法", "金額", "メモ"];
+  const head = ["日付", "集計月", "種別", "カテゴリ", "小カテゴリ", "品目", "利用者", "支払い方法", "金額", "メモ"];
   const body = list
     .slice()
     .sort((a, b) => a.date.localeCompare(b.date))
-    .map(t => [t.date, t.type === "income" ? "収入" : "支出", t.category, t.sub || "", t.item || "",
+    .map(t => [t.date, t.month, t.type === "income" ? "収入" : "支出", t.category, t.sub || "", t.item || "",
                t.user || "", t.payment || "", t.amount, t.memo || ""]
       .map(csvEscape).join(","));
   return [head.join(","), ...body].join("\r\n");
@@ -1479,49 +1515,57 @@ function importCSV(text) {
   const rows = parseCSV(text);
   if (!rows.length) return { added: 0, skipped: 0, newCats: 0 };
 
-  // 見出し行があれば列構成をそこから判断し、なければ列数で判断する
-  let hasSub, hasItem, hasUser, hasPay;
-  if (!/^\d{4}-\d{2}-\d{2}$/.test((rows[0][0] || "").trim())) {
-    hasSub = rows[0].some(h => h.includes("小カテゴリ"));
-    hasItem = rows[0].some(h => h.includes("品目"));
-    hasUser = rows[0].some(h => h.includes("利用者"));
-    hasPay = rows[0].some(h => h.includes("支払"));
-    rows.shift();
-  } else {
-    const n = rows[0].length;
-    hasSub = n >= 6;
-    hasUser = n >= 7;
-    hasItem = n >= 8;
-    hasPay = n >= 9;
+  // 見出し行があれば列名から、なければ列数から構成を判断する
+  const hasHeader = !/^\d{4}-\d{2}-\d{2}$/.test((rows[0][0] || "").trim());
+  const header = hasHeader ? rows.shift() : null;
+  let idx;
+
+  if (header) {
+    const at = name => header.findIndex(h => String(h).trim() === name);
+    idx = {
+      date: at("日付"), month: at("集計月"), type: at("種別"), category: at("カテゴリ"),
+      sub: at("小カテゴリ"), item: at("品目"), user: at("利用者"),
+      payment: at("支払い方法"), amount: at("金額"), memo: at("メモ")
+    };
   }
-  let col = 3;
-  const iSub = hasSub ? col++ : -1;
-  const iItem = hasItem ? col++ : -1;
-  const iUser = hasUser ? col++ : -1;
-  const iPay = hasPay ? col++ : -1;
-  const iAmount = col++;
-  const iMemo = col;
+  // 見出しが無い、または見出しから日付・金額を特定できない場合は旧形式の並びとみなす
+  // （日付, 種別, カテゴリ, [小カテゴリ], [品目], [利用者], [支払い方法], 金額, メモ）
+  if (!idx || idx.date < 0 || idx.amount < 0) {
+    const n = rows[0]?.length || 0;
+    let col = 3;
+    idx = { date: 0, month: -1, type: 1, category: 2 };
+    idx.sub     = n >= 6 ? col++ : -1;
+    idx.item    = n >= 8 ? col++ : -1;
+    idx.user    = n >= 7 ? col++ : -1;
+    idx.payment = n >= 9 ? col++ : -1;
+    idx.amount  = col++;
+    idx.memo    = col;
+  }
+  const cell = (r, i) => i >= 0 ? String(r[i] ?? "").trim() : "";
 
   let added = 0, skipped = 0, newCats = 0, newUsers = 0, newPays = 0;
   for (const r of rows) {
-    const date = (r[0] || "").trim();
-    const typeRaw = (r[1] || "").trim();
-    const category = (r[2] || "").trim() || "その他";
-    const sub = iSub >= 0 ? (r[iSub] || "").trim() : "";
-    const item = (sub && iItem >= 0) ? (r[iItem] || "").trim() : "";
-    const user = iUser >= 0 ? (r[iUser] || "").trim() : "";
-    const payment = iPay >= 0 ? (r[iPay] || "").trim() : "";
-    const amount = Math.round(Number(String(r[iAmount] ?? "").replace(/[,¥\s]/g, "")));
-    const memo = (r[iMemo] || "").trim();
+    const date = cell(r, idx.date);
+    const typeRaw = cell(r, idx.type);
+    const category = cell(r, idx.category) || "その他";
+    const sub = cell(r, idx.sub);
+    const item = sub ? cell(r, idx.item) : "";
+    const user = cell(r, idx.user);
+    const payment = cell(r, idx.payment);
+    const amount = Math.round(Number(cell(r, idx.amount).replace(/[,¥\s]/g, "")));
+    const memo = cell(r, idx.memo);
     const type = /収入|income/i.test(typeRaw) ? "income" : /支出|expense/i.test(typeRaw) ? "expense" : null;
 
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !type || !Number.isFinite(amount) || amount <= 0) { skipped++; continue; }
+    const rawMonth = cell(r, idx.month);
+    const month = /^\d{4}-\d{2}$/.test(rawMonth) ? rawMonth : date.slice(0, 7);
+
     if (ensureCategory(category, type)) newCats++;
     if (sub && ensureCategory(sub, type, [category])) newCats++;
     if (item && ensureCategory(item, type, [category, sub])) newCats++;
     if (user && !state.users.includes(user)) { state.users.push(user); newUsers++; }
     if (payment && !state.payments.includes(payment)) { state.payments.push(payment); newPays++; }
-    state.transactions.push({ id: uid(), date, type, category, sub, item, user, payment, amount, memo });
+    state.transactions.push({ id: uid(), date, month, type, category, sub, item, user, payment, amount, memo });
     added++;
   }
   save();
@@ -1584,14 +1628,15 @@ $("#txForm").addEventListener("submit", ev => {
   const user = $("#f-user").value;
   const payment = $("#f-pay").value;
   const memo = $("#f-memo").value.trim();
-  const fields = { date, type: view.type, category, sub, item, user, payment, amount, memo };
+  const month = $("#f-month").value || date.slice(0, 7);
+  const fields = { date, month, type: view.type, category, sub, item, user, payment, amount, memo };
 
   if (view.editingId) {
     const t = state.transactions.find(x => x.id === view.editingId);
     if (!t) { endEdit(); return; }
     Object.assign(t, fields);
     save();
-    if (date.slice(0, 7) !== view.month) view.month = date.slice(0, 7);
+    if (month !== view.month) view.month = month;
     endEdit();
     toast("記録を更新しました");
     return;
@@ -1599,8 +1644,7 @@ $("#txForm").addEventListener("submit", ev => {
 
   state.transactions.push({ id: uid(), ...fields });
   save();
-  const m = date.slice(0, 7);
-  if (m !== view.month) view.month = m;   // 入力した月へ自動で移動
+  if (month !== view.month) view.month = month;   // 入力した集計月へ自動で移動
   $("#f-amount").value = ""; $("#f-memo").value = "";
   $("#f-amount").focus();
   renderAll();
@@ -1616,6 +1660,7 @@ function startEdit(id) {
   $$("#f-type button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.type === t.type)));
   renderCatSelect();                       // 種別に応じてカテゴリ候補を作り直す
   $("#f-date").value = t.date;
+  renderAggMonthSelect(t.month);
   $("#f-cat").value = t.category;   renderSubSelect();
   $("#f-sub").value = t.sub || "";  renderItemSelect();
   $("#f-item").value = t.item || "";
@@ -2064,6 +2109,8 @@ function renderStmtSetup(rows, preset) {
     state.users.map(u => `<option value="${esc(u)}">${esc(u)}</option>`).join("");
   if (g.user && state.users.includes(g.user)) $("#m-user").value = g.user;
 
+  $("#m-agg").value = String(g.aggShift ?? 0);
+
   renderStmtPreview();
   renderStmtResult();
 }
@@ -2077,7 +2124,8 @@ function currentMapping() {
     sign: $("#m-sign").value,
     payment: $("#m-pay").value,
     category: $("#m-cat").value,
-    user: $("#m-user").value
+    user: $("#m-user").value,
+    aggShift: Number($("#m-agg").value) || 0   // 集計月を利用日から何か月ずらすか
   };
 }
 
@@ -2112,7 +2160,7 @@ function buildStmtRecords() {
     const memo = m.storeCol >= 0 ? String(r[m.storeCol] ?? "").trim().slice(0, 60) : "";
     const rule = matchRule(memo);
     records.push({
-      date, type: "expense",
+      date, month: shiftMonth(date.slice(0, 7), m.aggShift), type: "expense",
       category: rule ? rule.category : m.category,
       sub: rule ? (rule.sub || "") : "",
       item: "", user: m.user, payment: m.payment,
@@ -2145,13 +2193,14 @@ function renderStmtResult() {
   const rows = records.slice(0, 8).map(r => `
     <tr>
       <td class="num">${esc(r.date)}</td>
+      <td class="num ${r.date.slice(0, 7) === r.month ? "muted" : ""}">${esc(monthLabel(r.month))}</td>
       <td>${esc(r.category)}${r.sub ? ` <span class="crumb">›</span> ${esc(r.sub)}` : ""}${r.matched ? ' <span class="muted">(ルール)</span>' : ""}</td>
       <td class="amt">${yen(r.amount)}</td>
       <td class="memo">${esc(r.memo)}</td>
       <td class="${isDuplicate(r) ? "muted" : ""}">${isDuplicate(r) ? "重複" : ""}</td>
     </tr>`).join("");
   $("#stmtResult").innerHTML = records.length
-    ? `<thead><tr><th>日付</th><th>カテゴリ</th><th class="amt">金額</th><th>メモ</th><th></th></tr></thead><tbody>${rows}</tbody>`
+    ? `<thead><tr><th>日付</th><th>集計月</th><th>カテゴリ</th><th class="amt">金額</th><th>メモ</th><th></th></tr></thead><tbody>${rows}</tbody>`
     : "";
 
   const total = records.reduce((s, r) => s + r.amount, 0);
@@ -2189,7 +2238,7 @@ $("#stmtFile").addEventListener("change", ev => {
   reader.readAsArrayBuffer(file);
 });
 
-["#m-header", "#m-date", "#m-amount", "#m-store", "#m-sign", "#m-pay", "#m-cat", "#m-user"].forEach(sel => {
+["#m-header", "#m-date", "#m-amount", "#m-store", "#m-sign", "#m-pay", "#m-cat", "#m-user", "#m-agg"].forEach(sel => {
   $(sel).addEventListener("change", () => {
     if (sel === "#m-header" && stmtRows) {   // 見出し行が変わると列名の表示も変わる
       const m = currentMapping();
@@ -2237,7 +2286,7 @@ $("#stmtImport").addEventListener("click", () => {
   state.importProfiles[m.payment] = { ...m, width: Math.max(...stmtRows.map(x => x.length)) };
   save();
 
-  const months = [...new Set(fresh.map(r => r.date.slice(0, 7)))].sort();
+  const months = [...new Set(fresh.map(r => r.month))].sort();
   if (months.length) view.month = months[months.length - 1];
   stmtRows = null;
   $("#stmtSetup").classList.add("hidden");
@@ -2261,12 +2310,13 @@ const SETTINGS_KEYS = ["categories", "users", "payments", "rules", "importProfil
 const settingsSnapshot = () => JSON.stringify(Object.fromEntries(SETTINGS_KEYS.map(k => [k, state[k]])));
 
 const txRow = t => ({
-  id: t.id, date: t.date, type: t.type, category: t.category, sub: t.sub || "",
+  id: t.id, date: t.date, month: t.month, type: t.type, category: t.category, sub: t.sub || "",
   item: t.item || "", user_name: t.user || "", payment: t.payment || "",
   amount: t.amount, memo: t.memo || ""
 });
 const rowTx = r => ({
-  id: r.id, date: r.date, type: r.type, category: r.category, sub: r.sub || "",
+  id: r.id, date: r.date, month: r.month || String(r.date || "").slice(0, 7),
+  type: r.type, category: r.category, sub: r.sub || "",
   item: r.item || "", user: r.user_name || "", payment: r.payment || "",
   amount: r.amount, memo: r.memo || ""
 });
