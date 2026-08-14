@@ -322,12 +322,14 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
 .editing { outline: 2px solid var(--series-1); outline-offset: 2px; }
 .shifted { color: var(--serious); font-weight: 700; margin-left: 2px; cursor: help; }
 
-/* ── 繰上返済計画 ─────────────────────────────────────── */
-.pp-start { display: flex; gap: 6px; }
-.pp-start select {
+/* 年と月を横に並べる選択欄（繰上返済の開始月・取り込みの集計月） */
+.pp-start, .month-pick { display: flex; gap: 6px; }
+.pp-start select, .month-pick select {
   flex: 1; min-width: 0; background: var(--plane); border: 1px solid var(--border);
   border-radius: 8px; padding: 7px 9px;
 }
+
+/* ── 繰上返済計画 ─────────────────────────────────────── */
 .map-grid input[type="number"] {
   background: var(--plane); border: 1px solid var(--border); border-radius: 8px;
   padding: 7px 9px; width: 100%; text-align: right; font-variant-numeric: tabular-nums;
@@ -706,10 +708,19 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
               <option value="0">利用日と同じ月</option>
               <option value="1">利用日の翌月</option>
               <option value="2">利用日の翌々月</option>
+              <option value="fixed">指定の月にまとめる</option>
             </select>
           </div>
+          <div class="field hidden" id="m-agg-fixed"><label for="m-aggY">まとめる月</label>
+            <div class="month-pick">
+              <select id="m-aggY" aria-label="集計月（年）"></select>
+              <select id="m-aggM" aria-label="集計月（月）"></select>
+            </div>
+          </div>
         </div>
-        <p class="note">店名が下の「振り分けルール」に一致した記録は、そのカテゴリに割り当てられます。
+        <p class="note"><strong>集計月</strong>は、利用日から何か月ずらすかで決められます。
+          「指定の月にまとめる」を選ぶと、利用日にかかわらず全件を選んだ月の集計に入れられます。<br>
+          店名が下の「振り分けルール」に一致した記録は、そのカテゴリに割り当てられます。
           一致しなかった記録は「既定のカテゴリ」になります。<br>
           取り込むのは<strong>支出だけ</strong>です。逆符号の行（入金・返金・キャンセル）と、日付か金額が読めない行は取り込みません。
           同じ日付・金額・店名・支払い方法の記録が既にある場合も、重複として飛ばします。</p>
@@ -886,12 +897,13 @@ const DEFAULTS = {
   rules: [],            // 店名キーワード → カテゴリの振り分けルール
   importProfiles: {},   // 支払い方法ごとの、カード明細CSVの列対応
   // 繰上返済計画。家計簿の集計とは独立して持つ
-  prepay: { target: 0, start: "", months: 12, actual: {}, income: {}, expense: {}, collapsed: false },
+  prepay: { target: 0, start: "", months: 12, income: {}, expense: {}, collapsed: false },
   transactions: []
 };
 
 /* ══ 状態 ══════════════════════════════════════════════ */
 let state = load();
+lsSet(STORE_KEY, JSON.stringify(state));   // 移行で消えた古い項目を保存先からも落とす
 let view = {
   month: monthKey(new Date()),
   tab: "record",
@@ -940,7 +952,7 @@ function migrate(d) {
   if (!/^\d{4}-\d{2}$/.test(p.start || "")) p.start = monthKey(new Date());
   if (!Number.isFinite(p.months) || p.months < 1) p.months = 12;
   p.months = Math.min(120, Math.round(p.months));
-  if (!p.actual || typeof p.actual !== "object") p.actual = {};
+  delete p.actual;   // 手入力していた繰上返済額。差引で自動計算するようになったので破棄する
   // 収入・支出は月ごとの内訳リスト。単一の数値だった頃のデータは1件の内訳に変換する
   for (const key of ["income", "expense"]) {
     if (!p[key] || typeof p[key] !== "object") p[key] = {};
@@ -1589,7 +1601,10 @@ function renderPrepay() {
   const thisYear = new Date().getFullYear();
   const years = new Set([sy]);
   for (let y = thisYear - 6; y <= thisYear + 2; y++) years.add(y);
-  Object.keys(p.actual).forEach(k => years.add(Number(k.slice(0, 4))));
+  // 実績が入っている年は、範囲外でも選べるように残す
+  for (const key of ["income", "expense"]) {
+    Object.keys(p[key]).forEach(k => years.add(Number(k.slice(0, 4))));
+  }
   $("#pp-startY").innerHTML = [...years].sort((a, b) => a - b)
     .map(v => `<option value="${v}">${v}年</option>`).join("");
   $("#pp-startY").value = String(sy);
@@ -2492,12 +2507,50 @@ function renderStmtSetup(rows, preset) {
   if (g.user && state.users.includes(g.user)) $("#m-user").value = g.user;
 
   $("#m-agg").value = String(g.aggShift ?? 0);
+  fillAggMonth(true);
 
   renderStmtPreview();
   renderStmtResult();
 }
 
+// 「指定の月にまとめる」用の年月セレクトを組み立てる。
+// 既定は明細に入っている一番新しい利用日の月（そこを起点に選び直すことが多いため）。
+function fillAggMonth(reset) {
+  const wrap = $("#m-agg-fixed"), ySel = $("#m-aggY"), mSel = $("#m-aggM");
+  wrap.classList.toggle("hidden", $("#m-agg").value !== "fixed");
+
+  const thisYear = new Date().getFullYear();
+  const years = new Set();
+  for (let y = thisYear - 6; y <= thisYear + 2; y++) years.add(y);
+
+  let latest = "";
+  if (stmtRows) {
+    const dateCol = +$("#m-date").value;
+    if (dateCol >= 0) {
+      for (const r of stmtRows.slice((+$("#m-header").value) + 1)) {
+        const d = parseLooseDate(r[dateCol]);
+        if (d && d > latest) latest = d;
+      }
+    }
+  }
+  if (latest) years.add(Number(latest.slice(0, 4)));   // 明細の年が範囲外でも選べるように
+
+  const keep = reset ? "" : ySel.value;   // 別のファイルを読んだら、その明細に合わせ直す
+  ySel.innerHTML = [...years].sort((a, b) => a - b).map(v => `<option value="${v}">${v}年</option>`).join("");
+  if (mSel.options.length !== 12) {
+    mSel.innerHTML = Array.from({ length: 12 }, (_, i) => `<option value="${i + 1}">${i + 1}月</option>`).join("");
+  }
+  if (keep && [...ySel.options].some(o => o.value === keep)) {
+    ySel.value = keep;                                 // 一度選んだ月は保つ
+  } else {
+    const base = latest || todayISO();
+    ySel.value = String(Number(base.slice(0, 4)));
+    mSel.value = String(Number(base.slice(5, 7)));
+  }
+}
+
 function currentMapping() {
+  const agg = $("#m-agg").value;
   return {
     headerRow: +$("#m-header").value,
     dateCol: +$("#m-date").value,
@@ -2507,7 +2560,9 @@ function currentMapping() {
     payment: $("#m-pay").value,
     category: $("#m-cat").value,
     user: $("#m-user").value,
-    aggShift: Number($("#m-agg").value) || 0   // 集計月を利用日から何か月ずらすか
+    aggShift: Number(agg) || 0,   // 集計月を利用日から何か月ずらすか
+    // 全件を同じ月に入れる場合の集計月。空なら aggShift を使う
+    aggMonth: agg === "fixed" ? `${$("#m-aggY").value}-${String($("#m-aggM").value).padStart(2, "0")}` : ""
   };
 }
 
@@ -2542,7 +2597,7 @@ function buildStmtRecords() {
     const memo = m.storeCol >= 0 ? String(r[m.storeCol] ?? "").trim().slice(0, 60) : "";
     const rule = matchRule(memo);
     records.push({
-      date, month: shiftMonth(date.slice(0, 7), m.aggShift), type: "expense",
+      date, month: m.aggMonth || shiftMonth(date.slice(0, 7), m.aggShift), type: "expense",
       category: rule ? rule.category : m.category,
       sub: rule ? (rule.sub || "") : "",
       item: "", user: m.user, payment: m.payment,
@@ -2620,7 +2675,8 @@ $("#stmtFile").addEventListener("change", ev => {
   reader.readAsArrayBuffer(file);
 });
 
-["#m-header", "#m-date", "#m-amount", "#m-store", "#m-sign", "#m-pay", "#m-cat", "#m-user", "#m-agg"].forEach(sel => {
+["#m-header", "#m-date", "#m-amount", "#m-store", "#m-sign", "#m-pay", "#m-cat", "#m-user",
+  "#m-agg", "#m-aggY", "#m-aggM"].forEach(sel => {
   $(sel).addEventListener("change", () => {
     if (sel === "#m-header" && stmtRows) {   // 見出し行が変わると列名の表示も変わる
       const m = currentMapping();
@@ -2642,6 +2698,7 @@ $("#stmtFile").addEventListener("change", ev => {
         if (state.users.includes(p.user)) $("#m-user").value = p.user;
       }
     }
+    if (["#m-agg", "#m-header", "#m-date"].includes(sel)) fillAggMonth();
     renderStmtPreview();
     renderStmtResult();
   });
@@ -2664,8 +2721,9 @@ $("#stmtImport").addEventListener("click", () => {
     const { matched, ...rec } = r;
     state.transactions.push({ id: uid(), ...rec });
   });
-  // 次回のために対応づけを覚えておく
-  state.importProfiles[m.payment] = { ...m, width: Math.max(...stmtRows.map(x => x.length)) };
+  // 次回のために対応づけを覚えておく（指定の月は今回限りなので覚えない）
+  const { aggMonth, ...profile } = m;
+  state.importProfiles[m.payment] = { ...profile, width: Math.max(...stmtRows.map(x => x.length)) };
   save();
 
   const months = [...new Set(fresh.map(r => r.month))].sort();
@@ -2794,11 +2852,14 @@ async function pullAll() {
   state.transactions = rows.map(rowTx);
   const hasServerSettings = Array.isArray(data.categories) && data.categories.length > 0;
   if (hasServerSettings) SETTINGS_KEYS.forEach(k => { if (data[k] !== undefined) state[k] = data[k]; });
+  // サーバから受け取ったままの内容を控えてから移行する。
+  // 移行で変わった分（古い項目の削除など）が差分として残り、次の送信でサーバにも反映される
+  const serverSettings = settingsSnapshot();
   migrate(state);
   lsSet(STORE_KEY, JSON.stringify(state));
 
   // サーバにまだ設定が無ければ、次の送信で上げるため未同期扱いにしておく
-  synced = { tx: txMapOf(state.transactions), settings: hasServerSettings ? settingsSnapshot() : "" };
+  synced = { tx: txMapOf(state.transactions), settings: hasServerSettings ? serverSettings : "" };
 }
 
 /* ── 同期の実行と表示 ───────────────────────────────── */
@@ -2820,7 +2881,12 @@ async function sync({ pull = true } = {}) {
   setSyncState("syncing");
   try {
     await pushChanges();
-    if (pull) { await pullAll(); renderAll(); }
+    if (pull) {
+      await pullAll();
+      renderAll();
+      // 受信内容を移行して変わった分があれば、そのまま送り返す
+      if (synced && settingsSnapshot() !== synced.settings) await pushChanges();
+    }
     setSyncState("ok");
   } catch (e) {
     setSyncState("error", String(e.message || e));
