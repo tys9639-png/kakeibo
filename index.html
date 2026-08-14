@@ -506,7 +506,8 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
         </div>
         <div class="field f-item">
           <label for="f-item">品目</label>
-          <select id="f-item"></select>
+          <input type="text" id="f-item" list="f-item-list" maxlength="20" placeholder="任意（自由に入力できます）">
+          <datalist id="f-item-list"></datalist>
         </div>
         <div class="field f-user">
           <label for="f-user">利用者</label>
@@ -635,7 +636,9 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
       <h2>支出カテゴリ</h2>
       <p class="note">カテゴリは <strong>カテゴリ › 小カテゴリ › 品目</strong> の3階層です。各行の
         「＋小カテゴリ」「＋品目」で下の階層を追加できます。
-        月予算は最上位のカテゴリだけに設定し（0 円で「予算なし」）、小カテゴリと品目はその内訳になります。</p>
+        月予算は最上位のカテゴリだけに設定し（0 円で「予算なし」）、小カテゴリと品目はその内訳になります。<br>
+        <strong>品目は記録の入力欄でも自由に入力できます。</strong>新しく入力した品目はここにも自動で追加されるので、
+        あらかじめ登録しておく必要はありません。</p>
       <div class="cat-list" id="catExpense"></div>
       <form class="inline-add no-print" id="addExpenseCat">
         <input type="text" placeholder="カテゴリ名" maxlength="20" required>
@@ -1557,8 +1560,18 @@ function renderSubSelect() {
   fillLevelSelect($("#f-sub"), [$("#f-cat").value], 1);
   renderItemSelect();
 }
+// 品目は選択式ではなく自由入力。小カテゴリが決まっていないと意味を持たないので、
+// 未選択の間は入力できないようにし、既存の品目は候補（datalist）として出す
 function renderItemSelect() {
-  fillLevelSelect($("#f-item"), [$("#f-cat").value, $("#f-sub").value], 2);
+  const sub = $("#f-sub").value;
+  const hasSub = !$("#f-sub").disabled && sub !== "";
+  const input = $("#f-item");
+  input.disabled = !hasSub;
+  if (!hasSub) input.value = "";
+
+  const path = [$("#f-cat").value, sub];
+  const known = path.includes("") ? [] : nodesAt(view.type, path);
+  $("#f-item-list").innerHTML = known.map(c => `<option value="${esc(c.name)}"></option>`).join("");
 }
 // 入力フォームの「一覧から選ぶ項目」用セレクト
 function renderOptionSelect(sel, options) {
@@ -2021,12 +2034,15 @@ $("#txForm").addEventListener("submit", ev => {
     toast("日付・金額・カテゴリを確認してください"); return;
   }
   const sub = $("#f-sub").disabled ? "" : $("#f-sub").value;
-  const item = (!sub || $("#f-item").disabled) ? "" : $("#f-item").value;
+  const item = (!sub || $("#f-item").disabled) ? "" : $("#f-item").value.trim().slice(0, 20);
   const user = $("#f-user").value;
   const payment = $("#f-pay").value;
   const memo = $("#f-memo").value.trim();
   const month = $("#f-month").value || date.slice(0, 7);
   const fields = { date, month, type: view.type, category, sub, item, user, payment, amount, memo };
+
+  // 新しく入力した品目は、次回から候補に出るよう自動で登録する（CSV取り込みと同じ扱い）
+  if (item) ensureCategory(item, view.type, [category, sub]);
 
   if (view.editingId) {
     const t = state.transactions.find(x => x.id === view.editingId);
