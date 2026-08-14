@@ -267,6 +267,14 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
 .budget-head .nums { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--text-secondary); font-size: 13px; }
 .bar { height: 8px; border-radius: 4px; background: var(--wash); margin-top: 6px; overflow: hidden; }
 .bar > i { display: block; height: 100%; border-radius: 4px; }
+.budget-head .row-toggle { padding: 1px 4px; }
+
+/* 利用者別・支払い方法別の支出を開いたときのカテゴリ内訳 */
+.opt-detail { margin: 10px 0 2px 4px; padding-left: 14px; border-left: 2px solid var(--grid); }
+.opt-detail .budget-row { padding: 6px 0; }
+.opt-detail .budget-head { font-size: 13px; }
+.opt-detail .name { font-weight: 500; }
+.opt-detail .bar { height: 6px; }
 .status { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 600; }
 .status.over { color: var(--critical); }
 .status.near { color: var(--serious); }
@@ -344,12 +352,14 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
 #ppTable tfoot td { border-top: 2px solid var(--axis); border-bottom: 0; font-weight: 650; }
 .btn.fold { padding: 3px 9px; font-size: 13px; line-height: 1.2; min-width: 2em; }
 
-/* 収入・支出の内訳エディタ */
-.pp-month-btn {
+/* 開閉トグル（月ごとの実績・利用者別支出など、行を開いて内訳を出すボタン全般） */
+.row-toggle {
   background: none; border: 0; cursor: pointer; color: var(--text-muted);
   padding: 2px 5px; font-size: 12px; border-radius: 5px;
 }
-.pp-month-btn:hover { background: var(--wash); color: var(--text-primary); }
+.row-toggle:hover { background: var(--wash); color: var(--text-primary); }
+
+/* 収入・支出の内訳エディタ */
 .pp-detail > td { background: var(--plane); padding: 14px 12px; }
 .pp-detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; max-width: 720px; }
 .pp-detail-grid h4 { margin: 0 0 7px; font-size: 12px; font-weight: 650; color: var(--text-secondary); }
@@ -412,7 +422,7 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
   #thisMonth { margin-left: 2px !important; }
   /* 指で押しやすい大きさにする */
   .btn.fold { padding: 9px 14px; }
-  .pp-month-btn { padding: 8px 10px; font-size: 14px; }
+  .row-toggle { padding: 8px 10px; font-size: 14px; }
 }
 @media (max-width: 820px) {
   .charts { grid-template-columns: 1fr; }
@@ -1378,25 +1388,71 @@ function renderBars() {
 }
 
 /* ══ 描画：利用者別・支払い方法別の支出 ════════════════ */
-function renderOptionBreakdown(boxId, emptyId, monthId, options, field) {
+// 行を開くと、その中のカテゴリ内訳を表示できる（今のところ利用者別のみ）。
+// 開いている行は field ごとに覚えておく
+const optOpen = { user: new Set(), payment: new Set() };
+
+function renderOptionBreakdown(boxId, emptyId, monthId, options, field, expandable = false) {
   const list = txOfMonth(view.month).filter(t => t.type === "expense");
   const rows = byField(list, field);
   const total = rows.reduce((s, r) => s + r.value, 0);
   $(monthId).textContent = monthLabel(view.month);
   $(emptyId).classList.toggle("hidden", total !== 0);
 
+  const openSet = optOpen[field];
   $(boxId).innerHTML = total === 0 ? "" : rows.map(r => {
     const pct = r.value / total * 100;
     const n = list.filter(t => (t[field] || "") === r.name).length;
+    const open = expandable && openSet.has(r.name);
     return `<div class="budget-row">
       <div class="budget-head">
+        ${expandable ? `<button type="button" class="row-toggle" data-opt-toggle="${esc(r.name)}"
+          aria-expanded="${open}" title="カテゴリ内訳">${open ? "▾" : "▸"}</button>` : ""}
         <span class="name">${esc(optionLabel(r.name))}</span>
         <span class="nums">${yen(r.value)}・${pct.toFixed(0)}%・${n} 件</span>
       </div>
       <div class="bar"><i style="width:${pct.toFixed(1)}%;background:${optionColor(options, r.name)}"></i></div>
+      ${open ? optionCategoryDetail(list, field, r.name) : ""}
     </div>`;
   }).join("");
 }
+
+// ある利用者（等）の支出を、カテゴリ別の内訳として表示する
+function optionCategoryDetail(list, field, name) {
+  const raw = byCategory(list.filter(t => (t[field] || "") === name), "expense");
+  const total = raw.reduce((s, r) => s + r.value, 0);
+  if (!total) return "";
+
+  let slot = 0;
+  const head = raw.slice(0, MAX_SLICES).map(r => ({
+    label: levelLabel(0, r.name), value: r.value,
+    color: r.name === "" ? "var(--other)" : `var(${SERIES[slot++ % SERIES.length]})`
+  }));
+  const tail = raw.slice(MAX_SLICES);
+  if (tail.length) {
+    head.push({ label: `ほか ${tail.length} カテゴリ`, value: tail.reduce((s, r) => s + r.value, 0), color: "var(--other)" });
+  }
+  const rows = head.map(r => {
+    const pct = r.value / total * 100;
+    return `<div class="budget-row">
+      <div class="budget-head">
+        <span class="name">${esc(r.label)}</span>
+        <span class="nums">${yen(r.value)}・${pct.toFixed(0)}%</span>
+      </div>
+      <div class="bar"><i style="width:${pct.toFixed(1)}%;background:${r.color}"></i></div>
+    </div>`;
+  }).join("");
+  return `<div class="opt-detail">${rows}</div>`;
+}
+
+$("#userBreakdown").addEventListener("click", ev => {
+  const btn = ev.target.closest("[data-opt-toggle]");
+  if (!btn) return;
+  const name = btn.dataset.optToggle;
+  const set = optOpen.user;
+  if (set.has(name)) set.delete(name); else set.add(name);
+  renderOptionBreakdown("#userBreakdown", "#userEmpty", "#userMonth", state.users, "user", true);
+});
 
 /* ══ 描画：利用者・支払い方法の管理 ════════════════════ */
 function renderOptionList(boxId, options, kind, emptyText) {
@@ -1639,7 +1695,7 @@ function renderPrepay() {
   $("#ppTable tbody").innerHTML = calc.rows.map(r => `
     <tr data-m="${r.k}" class="${r.isNow ? "cur" : ""}">
       <td>
-        <button class="pp-month-btn" data-open="${r.k}" aria-expanded="${ppOpen.has(r.k)}"
+        <button class="row-toggle" data-open="${r.k}" aria-expanded="${ppOpen.has(r.k)}"
           title="収入・支出の内訳">${ppOpen.has(r.k) ? "▾" : "▸"}</button>
         ${monthLabel(r.k)}${r.isNow ? ' <span class="muted">今月</span>' : ""}
       </td>
@@ -1862,7 +1918,7 @@ function renderAll() {
   }
   if (view.tab === "summary") {
     renderDonut(); renderBars();
-    renderOptionBreakdown("#userBreakdown", "#userEmpty", "#userMonth", state.users, "user");
+    renderOptionBreakdown("#userBreakdown", "#userEmpty", "#userMonth", state.users, "user", true);
     renderOptionBreakdown("#payBreakdown", "#payEmpty", "#payMonth", state.payments, "payment");
     renderSummaryTable();
   }
