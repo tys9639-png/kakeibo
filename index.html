@@ -648,7 +648,10 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
         「＋小カテゴリ」「＋品目」で下の階層を追加できます。
         月予算は最上位のカテゴリだけに設定し（0 円で「予算なし」）、小カテゴリと品目はその内訳になります。<br>
         <strong>品目は記録の入力欄でも自由に入力できます。</strong>新しく入力した品目はここにも自動で追加されるので、
-        あらかじめ登録しておく必要はありません。</p>
+        あらかじめ登録しておく必要はありません。<br>
+        <strong>「チャージ」カテゴリは特別扱いです。</strong>プリペイド残高へのチャージ額そのものを記録する場所で、
+        支払い方法の「チャージ」で実際に使った分をここから自動で差し引きます（二重計上を防ぐため）。詳しくは
+        「支払い方法」のカードを参照してください。</p>
       <div class="cat-list" id="catExpense"></div>
       <form class="inline-add no-print" id="addExpenseCat">
         <input type="text" placeholder="カテゴリ名" maxlength="20" required>
@@ -669,7 +672,12 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
 
     <div class="card">
       <h2>支払い方法</h2>
-      <p class="note">記録するときに選べる支払い方法の一覧です。削除しても記録は消えず、その記録の支払い方法が「未設定」になります。</p>
+      <p class="note">記録するときに選べる支払い方法の一覧です。削除しても記録は消えず、その記録の支払い方法が「未設定」になります。<br>
+        <strong>支払い方法「チャージ」は、プリペイド残高（電子マネーなど）からすでにチャージ済みのお金で払った記録に使います。</strong>
+        例：カードから電子マネーに¥10,000チャージ（カテゴリ「チャージ」・支払い方法はDC CARDなど本来の支払い元）し、
+        その電子マネーで食費を¥3,000払った（カテゴリ「食費」・支払い方法「チャージ」）。
+        この場合、カテゴリ「チャージ」の合計は自動で ¥10,000 − ¥3,000 = ¥7,000（まだ使っていない残り）になり、
+        月の支出合計・予算・グラフにもこの実質額が反映されます。二重に支出として数えられることはありません。</p>
       <div class="cat-list" id="payList"></div>
       <form class="inline-add no-print" id="addPay">
         <input type="text" placeholder="支払い方法名" maxlength="24" required>
@@ -899,6 +907,7 @@ const DEFAULTS = {
     { name: "タクシー",   type: "expense", path: ["交通費"],   budget: 0 },
     { name: "娯楽",       type: "expense", path: [],           budget: 15000 },
     { name: "医療",       type: "expense", path: [],           budget: 0 },
+    { name: "チャージ",   type: "expense", path: [],           budget: 0 },
     { name: "その他",     type: "expense", path: [],           budget: 0 },
     { name: "給与",       type: "income",  path: [],           budget: 0 },
     { name: "賞与",       type: "income",  path: [],           budget: 0 },
@@ -906,7 +915,7 @@ const DEFAULTS = {
     { name: "その他",     type: "income",  path: [],           budget: 0 }
   ],
   users: ["豪", "美夏", "心葉", "家族"],
-  payments: ["DC CARD", "docomo D Card", "d払い", "引落", "現金"],
+  payments: ["DC CARD", "docomo D Card", "d払い", "引落", "現金", "チャージ"],
   rules: [],            // 店名キーワード → カテゴリの振り分けルール
   importProfiles: {},   // 支払い方法ごとの、カード明細CSVの列対応
   // 繰上返済計画。家計簿の集計とは独立して持つ
@@ -957,6 +966,14 @@ function migrate(d) {
   if (!Array.isArray(d.payments)) d.payments = structuredClone(DEFAULTS.payments);
   if (!Array.isArray(d.rules)) d.rules = [];
   if (!d.importProfiles || typeof d.importProfiles !== "object") d.importProfiles = {};
+
+  // 「チャージ」（カテゴリ・支払い方法とも）を、既存のデータにも追加する。
+  // 二重計上を防ぐ計算（下記 byLevel・totals）はこの名前で判定しているので、
+  // 名前を変えるとその計算は効かなくなる
+  if (!d.categories.some(c => c.type === "expense" && c.path.length === 0 && c.name === "チャージ")) {
+    d.categories.push({ name: "チャージ", type: "expense", path: [], budget: 0 });
+  }
+  if (!d.payments.includes("チャージ")) d.payments.push("チャージ");
 
   // 繰上返済計画
   if (!d.prepay || typeof d.prepay !== "object") d.prepay = {};
@@ -1021,6 +1038,10 @@ function todayISO() {
 function yen(n) {
   return "¥" + Math.round(n).toLocaleString("ja-JP");
 }
+// マイナスは「−¥1,234」の形で出す（¥-1,234 にしない）
+const yenAmt = v => v < 0 ? "−" + yen(-v) : yen(v);
+const signedYen = v => v === 0 ? "±0" : (v > 0 ? "+" : "−") + yen(Math.abs(v)).slice(1);
+const signColor = v => v < 0 ? "var(--critical)" : v > 0 ? "var(--delta-up)" : "var(--text-muted)";
 function yenShort(n) {
   if (n === 0) return "0";
   if (Math.abs(n) >= 10000) {
@@ -1053,6 +1074,24 @@ function totals(list) {
   let income = 0, expense = 0;
   for (const t of list) (t.type === "income" ? (income += t.amount) : (expense += t.amount));
   return { income, expense, balance: income - expense, count: list.length };
+}
+// 支払い方法「チャージ」で払った分の合計（＝チャージ済みの残高から実際に使われた額）。
+// 渡した list と同じ範囲で計算する。
+// カテゴリ「チャージ」はチャージした額そのものを記録する場所なので、
+// 同じ額が2回（チャージした時と、チャージ残高を使った時）支出に数えられてしまう。
+// これを避けるため、カテゴリ別の集計（byLevel）と、月全体の集計（monthTotals）からはこの額を差し引く。
+// 一覧の絞り込み表示など、部分的なリストの合計にはあえて適用しない
+// （例えば支払い方法を「チャージ」に絞ると、その絞り込みの中では常に差し引き額＝合計になり、
+// 支出が0円に見えてしまうため）。名前を変えるとこの判定が効かなくなる点にも注意
+function chargePaidIn(list) {
+  return list.reduce((s, t) => s + (t.type === "expense" && (t.payment || "") === "チャージ" ? t.amount : 0), 0);
+}
+// その月の「本当の」集計（タイル・グラフ・月別サマリーなど、月全体を扱う場所でだけ使う）
+function monthTotals(month) {
+  const list = txOfMonth(month);
+  const t = totals(list);
+  const paid = chargePaidIn(list);
+  return { income: t.income, expense: t.expense - paid, balance: t.balance + paid, count: t.count };
 }
 /* ── カテゴリの木構造 ───────────────────────────────── */
 const samePath = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
@@ -1088,6 +1127,13 @@ function byLevel(list, type, path) {
     const key = t[TX_FIELDS[level]] || "";
     map.set(key, (map.get(key) || 0) + t.amount);
   }
+  // カテゴリ単位（level 0）の「チャージ」は、二重計上を防ぐため実質額にする。
+  // チャージ払いがあれば、チャージした額が無くてもマイナスの行として出す
+  // （monthTotals() の支出合計と辻褄を合わせるため）
+  if (type === "expense" && level === 0) {
+    const paid = chargePaidIn(list);
+    if (paid !== 0 || map.has("チャージ")) map.set("チャージ", (map.get("チャージ") || 0) - paid);
+  }
   return Array.from(map, ([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
 }
 function byCategory(list, type) {
@@ -1119,8 +1165,8 @@ function allMonths() {
 
 /* ══ 描画：タイル ══════════════════════════════════════ */
 function renderTiles() {
-  const t = totals(txOfMonth(view.month));
-  const prev = totals(txOfMonth(shiftMonth(view.month, -1)));
+  const t = monthTotals(view.month);
+  const prev = monthTotals(shiftMonth(view.month, -1));
   const diff = t.expense - prev.expense;
   const diffText = prev.expense === 0
     ? "前月の記録なし"
@@ -1134,12 +1180,12 @@ function renderTiles() {
     </div>
     <div class="tile">
       <div class="k"><i class="swatch" style="background:var(--series-2)"></i>支出</div>
-      <div class="v num">${yen(t.expense)}</div>
+      <div class="v num ${t.expense < 0 ? "neg" : ""}">${yenAmt(t.expense)}</div>
       <div class="sub">${esc(diffText)}</div>
     </div>
     <div class="tile">
       <div class="k">収支</div>
-      <div class="v num ${t.balance > 0 ? "pos" : t.balance < 0 ? "neg" : ""}">${t.balance < 0 ? "−" + yen(-t.balance) : yen(t.balance)}</div>
+      <div class="v num ${t.balance > 0 ? "pos" : t.balance < 0 ? "neg" : ""}">${yenAmt(t.balance)}</div>
       <div class="sub">${t.balance >= 0 ? "黒字" : "赤字"}</div>
     </div>`;
 }
@@ -1231,9 +1277,11 @@ function renderDonut() {
   $("#donutHint").textContent = rows.some(r => r.drillable)
     ? `${LEVEL_NAMES[drill.length + 1]}があるスライスはクリックで内訳を表示します。`
     : (drill.length ? `${LEVEL_NAMES[drill.length]}ごとの内訳です。` : "");
-  $("#donutEmpty").classList.toggle("hidden", total !== 0);
-  $("#donutBox").classList.toggle("hidden", total === 0);
-  if (total === 0) { svg.innerHTML = ""; legend.innerHTML = ""; return; }
+  // 合計がゼロ以下（「チャージ」の実質額がマイナスに振れて全体を押し下げた場合を含む）は
+  // 円グラフとして描けないので、支出なしの表示にする
+  $("#donutEmpty").classList.toggle("hidden", total > 0);
+  $("#donutBox").classList.toggle("hidden", total <= 0);
+  if (total <= 0) { svg.innerHTML = ""; legend.innerHTML = ""; return; }
 
   const cx = 100, cy = 100, r = 88, ri = 56;
   let a = -Math.PI / 2;
@@ -1241,6 +1289,9 @@ function renderDonut() {
 
   rows.forEach((row, i) => {
     const frac = row.value / total;
+    // 「チャージ」がマイナスになった行は帯として描けないので、面積は0として飛ばす
+    // （凡例には実際の額をそのまま出す）
+    if (frac <= 0) return;
     if (frac >= 0.9999) {
       paths += `<circle class="seg-mark" data-i="${i}" cx="${cx}" cy="${cy}" r="${(r + ri) / 2}"
         fill="none" stroke="${row.color}" stroke-width="${r - ri}"></circle>`;
@@ -1258,12 +1309,13 @@ function renderDonut() {
     <text x="${cx}" y="${cy - 6}" text-anchor="middle" font-size="11" fill="var(--text-muted)">${esc(centerLabel)}</text>
     <text x="${cx}" y="${cy + 15}" text-anchor="middle" font-size="18" font-weight="650" fill="var(--text-primary)">${yen(total)}</text>`;
 
+  const pctLabel = v => (v < 0 ? "−" : "") + Math.abs(v).toFixed(0) + "%";
   legend.innerHTML = rows.map((row, i) => `
     <div class="row" data-i="${i}"${row.drillable ? ' style="cursor:pointer" title="内訳を見る"' : ""}>
       <i class="swatch" style="background:${row.color}"></i>
       <span class="name">${esc(row.name)}${row.drillable ? ' <span class="crumb">›</span>' : ""}</span>
-      <span class="val num">${yen(row.value)}</span>
-      <span class="pct num">${(row.value / total * 100).toFixed(0)}%</span>
+      <span class="val num" style="${row.value < 0 ? "color:var(--critical)" : ""}">${yenAmt(row.value)}</span>
+      <span class="pct num">${pctLabel(row.value / total * 100)}</span>
     </div>`).join("");
 
   // ホバー：セグメントと凡例を連動
@@ -1273,11 +1325,12 @@ function renderDonut() {
     marks.forEach(m => m.classList.toggle("dim", i !== null && +m.dataset.i !== i));
     legRows.forEach(rw => rw.classList.toggle("dim", i !== null && +rw.dataset.i !== i));
   };
+  const pct1Label = v => (v < 0 ? "−" : "") + Math.abs(v).toFixed(1) + "%";
   const showTip = (i, ev) => {
     const row = rows[i];
     tip.innerHTML = `<div class="t-title">${esc(row.name)}</div>
       <div class="t-row"><i class="swatch" style="background:${row.color}"></i>
-      <span class="val num">${yen(row.value)}（${(row.value / total * 100).toFixed(1)}%）</span></div>
+      <span class="val num">${yenAmt(row.value)}（${pct1Label(row.value / total * 100)}）</span></div>
       ${row.drillable ? '<div class="t-row sec">クリックで内訳</div>' : ""}`;
     const b = box.getBoundingClientRect();
     tip.style.left = (ev.clientX - b.left) + "px";
@@ -1319,7 +1372,7 @@ function barPath(x, y, w, h, r) {
 
 function renderBars() {
   const months = recentMonths(6);
-  const data = months.map(k => ({ key: k, ...totals(txOfMonth(k)) }));
+  const data = months.map(k => ({ key: k, ...monthTotals(k) }));
   const max = niceMax(Math.max(1, ...data.flatMap(d => [d.income, d.expense])));
 
   const W = 560, H = 260, padL = 52, padR = 8, padT = 12, padB = 34;
@@ -1373,9 +1426,9 @@ function renderBars() {
     const d = data[+rect.dataset.i];
     rect.addEventListener("mousemove", ev => {
       tip.innerHTML = `<div class="t-title">${monthLabel(d.key)}</div>
-        <div class="t-row"><i class="swatch" style="background:var(--series-1)"></i>収入<span class="val num">${yen(d.income)}</span></div>
-        <div class="t-row"><i class="swatch" style="background:var(--series-2)"></i>支出<span class="val num">${yen(d.expense)}</span></div>
-        <div class="t-row sec">収支<span class="val num">${d.balance < 0 ? "−" + yen(-d.balance) : yen(d.balance)}</span></div>`;
+        <div class="t-row"><i class="swatch" style="background:var(--series-1)"></i>収入<span class="val num">${yenAmt(d.income)}</span></div>
+        <div class="t-row"><i class="swatch" style="background:var(--series-2)"></i>支出<span class="val num">${yenAmt(d.expense)}</span></div>
+        <div class="t-row sec">収支<span class="val num">${yenAmt(d.balance)}</span></div>`;
       const b = box.getBoundingClientRect();
       tip.style.left = (ev.clientX - b.left) + "px";
       tip.style.top = (ev.clientY - b.top - 12) + "px";
@@ -1421,7 +1474,8 @@ function renderOptionBreakdown(boxId, emptyId, monthId, options, field, expandab
 function optionCategoryDetail(list, field, name) {
   const raw = byCategory(list.filter(t => (t[field] || "") === name), "expense");
   const total = raw.reduce((s, r) => s + r.value, 0);
-  if (!total) return "";
+  // 「チャージ」の実質額がマイナスに振れて合計を押し下げた場合は、バーとして描けないので出さない
+  if (total <= 0) return "";
 
   let slot = 0;
   const head = raw.slice(0, MAX_SLICES).map(r => ({
@@ -1437,9 +1491,9 @@ function optionCategoryDetail(list, field, name) {
     return `<div class="budget-row">
       <div class="budget-head">
         <span class="name">${esc(r.label)}</span>
-        <span class="nums">${yen(r.value)}・${pct.toFixed(0)}%</span>
+        <span class="nums" style="${r.value < 0 ? "color:var(--critical)" : ""}">${yenAmt(r.value)}・${(pct < 0 ? "−" : "") + Math.abs(pct).toFixed(0)}%</span>
       </div>
-      <div class="bar"><i style="width:${pct.toFixed(1)}%;background:${r.color}"></i></div>
+      <div class="bar"><i style="width:${Math.max(0, pct).toFixed(1)}%;background:${r.color}"></i></div>
     </div>`;
   }).join("");
   return `<div class="opt-detail">${rows}</div>`;
@@ -1505,12 +1559,12 @@ function renderSummaryTable() {
   const months = allMonths();
   const tbody = $("#summaryTable tbody");
   tbody.innerHTML = months.map(k => {
-    const t = totals(txOfMonth(k));
+    const t = monthTotals(k);
     return `<tr data-month="${k}" class="${k === view.month ? "cur" : ""}" title="この月を表示">
       <td>${monthLabel(k)}</td>
-      <td class="amt">${yen(t.income)}</td>
-      <td class="amt">${yen(t.expense)}</td>
-      <td class="amt" style="color:${t.balance < 0 ? "var(--critical)" : "var(--delta-up)"}">${t.balance < 0 ? "−" + yen(-t.balance) : yen(t.balance)}</td>
+      <td class="amt">${yenAmt(t.income)}</td>
+      <td class="amt" style="${t.expense < 0 ? "color:var(--critical)" : ""}">${yenAmt(t.expense)}</td>
+      <td class="amt" style="color:${t.balance < 0 ? "var(--critical)" : "var(--delta-up)"}">${yenAmt(t.balance)}</td>
       <td class="amt">${t.count}</td>
     </tr>`;
   }).join("");
@@ -1544,9 +1598,9 @@ function renderBudget() {
       <div class="budget-head">
         <span class="name">${esc(c.name)}</span>
         ${badge}
-        <span class="nums">${yen(used)} / ${yen(c.budget)}・${pct.toFixed(0)}%</span>
+        <span class="nums">${yenAmt(used)} / ${yen(c.budget)}・${(pct < 0 ? "−" : "") + Math.abs(pct).toFixed(0)}%</span>
       </div>
-      <div class="bar"><i style="width:${Math.min(100, pct).toFixed(1)}%;background:${color}"></i></div>
+      <div class="bar"><i style="width:${Math.max(0, Math.min(100, pct)).toFixed(1)}%;background:${color}"></i></div>
       ${breakdown}
     </div>`;
   }).join("");
@@ -1775,11 +1829,6 @@ function prepayCalc() {
     targetToDate, actualToDate, doneMonths
   };
 }
-
-const signedYen = v => v === 0 ? "±0" : (v > 0 ? "+" : "−") + yen(Math.abs(v)).slice(1);
-const signColor = v => v < 0 ? "var(--critical)" : v > 0 ? "var(--delta-up)" : "var(--text-muted)";
-// マイナスは「−¥1,234」の形で出す（¥-1,234 にしない）
-const yenAmt = v => v < 0 ? "−" + yen(-v) : yen(v);
 
 // 表の行は組み直さず、計算結果のセルだけ書き換える（入力中に入力欄を失わないため）
 function refreshPrepayCalc(calc) {
