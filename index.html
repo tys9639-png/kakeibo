@@ -1008,7 +1008,9 @@ function migrate(d) {
   }
   return d;
 }
+let saveSeq = 0;   // 保存のたびに増やす。同期の取得中に編集されたかの判定に使う
 function save() {
+  saveSeq++;
   if (!lsSet(STORE_KEY, JSON.stringify(state))) {
     toast("保存できませんでした（ブラウザの保存設定・容量を確認してください）");
   }
@@ -2964,11 +2966,29 @@ async function pushChanges() {
   return upserts.length + deletes.length;
 }
 
+// 記録を全件取得する。Supabase は1回の取得で返す行数に上限（既定1000件）があり、
+// 「全件取得」の1回だけだと、それを超えた分（新しく足した記録を含む）が黙って欠けてしまう。
+// 並びを固定したうえで、空のページが返るまで続きを取る（上限がいくつでも動くように）
+async function fetchAllTransactions() {
+  const out = [];
+  for (let page = 0; page < 1000; page++) {
+    const rows = await rest("GET", `/transactions?select=*&order=id.asc&limit=1000&offset=${out.length}`) || [];
+    if (!rows.length) break;
+    out.push(...rows);
+  }
+  return out;
+}
+
 // サーバの内容で置き換える（差分を送った直後にだけ呼ぶ）
 async function pullAll() {
-  const rows = await rest("GET", "/transactions?select=*") || [];
+  const seq = saveSeq;
+  const rows = await fetchAllTransactions();
   const srv = await rest("GET", "/settings?select=data&id=eq.1") || [];
   const data = srv[0]?.data || {};
+
+  // 取得している間に記録を追加・編集していたら、その内容を消さないよう今回の取り込みはやめる
+  // （未送信の変更はそのまま残り、直後の同期で送られる）
+  if (seq !== saveSeq) return false;
 
   state.transactions = rows.map(rowTx);
   const hasServerSettings = Array.isArray(data.categories) && data.categories.length > 0;
@@ -2981,6 +3001,7 @@ async function pullAll() {
 
   // サーバにまだ設定が無ければ、次の送信で上げるため未同期扱いにしておく
   synced = { tx: txMapOf(state.transactions), settings: hasServerSettings ? serverSettings : "" };
+  return true;
 }
 
 /* ── 同期の実行と表示 ───────────────────────────────── */
@@ -3003,7 +3024,7 @@ async function sync({ pull = true } = {}) {
   try {
     await pushChanges();
     if (pull) {
-      await pullAll();
+      if (!await pullAll()) { setSyncState("pending"); queueSync(); syncing = false; return; }
       renderAll();
       // 受信内容を移行して変わった分があれば、そのまま送り返す
       if (synced && settingsSnapshot() !== synced.settings) await pushChanges();
