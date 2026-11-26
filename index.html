@@ -2883,7 +2883,38 @@ const rowTx = r => ({
   item: r.item || "", user: r.user_name || "", payment: r.payment || "",
   amount: r.amount, memo: r.memo || ""
 });
-const txMapOf = list => new Map(list.map(t => [t.id, JSON.stringify(txRow(t))]));
+// 内容の指紋（cyrb53 ハッシュ）。基準を端末に保存するとき小さく収めるため
+function sig(obj) {
+  const s = JSON.stringify(obj);
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 2654435761);
+    h2 = Math.imul(h2 ^ c, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+}
+const txMapOf = list => new Map(list.map(t => [t.id, sig(txRow(t))]));
+
+// 「最後にサーバと一致した内容」を端末にも残す。
+// メモリだけだと、クラウドが止まっている間に追加した記録は、再読み込みで基準が失われ、
+// 復旧後の取り込みで上書きされて消えてしまう。保存しておけば再起動後も差分として送り直せる
+const SYNCED_KEY = "kakeibo.synced";
+function saveSynced() {
+  if (!synced || !session) return;
+  lsSet(SYNCED_KEY, JSON.stringify({ email: session.email, tx: [...synced.tx], settings: synced.settings }));
+}
+function loadSynced() {
+  try {
+    const d = JSON.parse(lsGet(SYNCED_KEY) || "null");
+    if (d && d.email === session?.email && Array.isArray(d.tx)) {
+      return { tx: new Map(d.tx), settings: String(d.settings ?? "") };
+    }
+  } catch (e) {}
+  return null;
+}
 
 /* ── 認証 ───────────────────────────────────────────── */
 function loadSession() {
@@ -2945,7 +2976,7 @@ async function rest(method, path, body, extra, retry = true) {
 async function pushChanges() {
   const cur = txMapOf(state.transactions);
   const upserts = [];
-  for (const [id, json] of cur) if (synced.tx.get(id) !== json) upserts.push(JSON.parse(json));
+  for (const t of state.transactions) if (synced.tx.get(t.id) !== cur.get(t.id)) upserts.push(txRow(t));
   const deletes = [...synced.tx.keys()].filter(id => !cur.has(id));
   const settings = settingsSnapshot();
   const settingsChanged = settings !== synced.settings;
@@ -2963,16 +2994,17 @@ async function pushChanges() {
       { data: JSON.parse(settings), updated_at: new Date().toISOString() }, { Prefer: "return=minimal" });
   }
   synced = { tx: cur, settings };
+  saveSynced();
   return upserts.length + deletes.length;
 }
 
 // 記録を全件取得する。Supabase は1回の取得で返す行数に上限（既定1000件）があり、
 // 「全件取得」の1回だけだと、それを超えた分（新しく足した記録を含む）が黙って欠けてしまう。
 // 並びを固定したうえで、空のページが返るまで続きを取る（上限がいくつでも動くように）
-async function fetchAllTransactions() {
+async function fetchAllTransactions(select = "*") {
   const out = [];
   for (let page = 0; page < 1000; page++) {
-    const rows = await rest("GET", `/transactions?select=*&order=id.asc&limit=1000&offset=${out.length}`) || [];
+    const rows = await rest("GET", `/transactions?select=${select}&order=id.asc&limit=1000&offset=${out.length}`) || [];
     if (!rows.length) break;
     out.push(...rows);
   }
@@ -3001,6 +3033,7 @@ async function pullAll() {
 
   // サーバにまだ設定が無ければ、次の送信で上げるため未同期扱いにしておく
   synced = { tx: txMapOf(state.transactions), settings: hasServerSettings ? serverSettings : "" };
+  saveSynced();
   return true;
 }
 
@@ -3017,8 +3050,8 @@ function setSyncState(s, detail) {
 }
 
 async function sync({ pull = true } = {}) {
-  if (!session || syncing) return;
-  if (view.editingId) pull = false;      // 編集中に画面を作り直さない
+  if (!session || syncing || !synced) return;   // 基準が無い間は firstSync() が先
+  if (view.editingId) pull = false;     // 編集中に画面を作り直さない
   syncing = true;
   setSyncState("syncing");
   try {
@@ -3045,24 +3078,47 @@ function queueSync() {
 
 // ログイン直後の1回目：端末に既にデータがあれば、クラウドへ移すか尋ねる
 async function firstSync() {
+  if (!session || syncing) return;
+  syncing = true;
   setSyncState("syncing");
+  let rescued = 0;
   try {
-    const probe = await rest("GET", "/transactions?select=id&limit=1") || [];
-    const localCount = state.transactions.length;
-    if (probe.length === 0 && localCount > 0 &&
-        confirm(`クラウドにはまだ記録がありません。\nこの端末にある ${localCount} 件をクラウドへ移しますか？\n\n「キャンセル」を選ぶと、クラウド側（空）の状態を読み込みます。`)) {
-      synced = { tx: new Map(), settings: "" };   // すべてを差分として送る
-      await pushChanges();
+    synced = loadSynced();
+    if (synced) {
+      // 前回の同期の基準が端末にある：停止中などに加えた追加・修正・削除を、取り込む前にまず送る
+      rescued = await pushChanges();
+    } else {
+      // 基準が無い（初回・保存が消えた）：端末にだけある記録は、消さずにクラウドへ足す。クラウド側の記録は決して消さない
+      const serverIds = new Set((await fetchAllTransactions("id")).map(r => r.id));
+      const localCount = state.transactions.length;
+      if (serverIds.size === 0 && localCount > 0) {
+        if (confirm(`クラウドにはまだ記録がありません。\nこの端末にある ${localCount} 件をクラウドへ移しますか？\n\n「キャンセル」を選ぶと、クラウド側（空）の状態を読み込みます。`)) {
+          synced = { tx: new Map(), settings: "" };   // すべてを差分として送る
+          rescued = await pushChanges();
+        } else {
+          synced = { tx: new Map(), settings: settingsSnapshot() };
+        }
+      } else {
+        // サーバにある記録は「同期済み」、端末にだけある記録は「未送信」として差分に出す。設定はクラウド側を優先
+        synced = { tx: txMapOf(state.transactions.filter(t => serverIds.has(t.id))), settings: settingsSnapshot() };
+        rescued = await pushChanges();
+      }
     }
-    await pullAll();
+    if (!await pullAll()) { setSyncState("pending"); queueSync(); return; }
     renderAll();
+    if (synced && settingsSnapshot() !== synced.settings) await pushChanges();
     setSyncState("ok");
-    toast("クラウドと同期しました");
+    toast(rescued > 0 ? `クラウドと同期しました（未送信の ${rescued} 件を送りました）` : "クラウドと同期しました");
   } catch (e) {
+    synced = null;
     setSyncState("error", String(e.message || e));
     toast("クラウドに接続できませんでした");
+  } finally {
+    syncing = false;
   }
 }
+// 基準がまだ無ければ最初の同期から、あれば通常の同期を行う
+function syncNow() { return synced ? sync() : firstSync(); }
 
 /* ── ログイン画面 ───────────────────────────────────── */
 function showAuth(msg) {
@@ -3104,6 +3160,7 @@ $("#logoutBtn").addEventListener("click", () => {
   if (!confirm("ログアウトします。よろしいですか？\n（この端末に残っている記録は消えません）")) return;
   setSession(null);
   synced = null;
+  lsDel(SYNCED_KEY);
   $("#logoutBtn").classList.add("hidden");
   setSyncState("local");
   showAuth();
@@ -3111,12 +3168,12 @@ $("#logoutBtn").addEventListener("click", () => {
 
 $("#syncBtn").addEventListener("click", () => {
   if (!session) { showAuth(); return; }
-  sync();
+  syncNow();
 });
 
 // 別の端末での変更を拾うため、画面に戻ったときとオンライン復帰時に取り直す
-document.addEventListener("visibilitychange", () => { if (!document.hidden) sync(); });
-window.addEventListener("online", () => sync());
+document.addEventListener("visibilitychange", () => { if (!document.hidden && session) syncNow(); });
+window.addEventListener("online", () => { if (session) syncNow(); });
 
 async function initAuth() {
   loadSession();
